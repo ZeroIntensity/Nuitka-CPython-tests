@@ -79,6 +79,8 @@ class TypeCacheTests(unittest.TestCase):
 
         _clear_type_cache()
 
+"""
+Nuitka: This is all bytecode testing that we can't replicate.
 
 @support.cpython_only
 class TypeCacheWithSpecializationTests(unittest.TestCase):
@@ -197,6 +199,7 @@ class TypeCacheWithSpecializationTests(unittest.TestCase):
             type_.bar = 10
 
         self._check_specialization(store_bar_2, B(), "STORE_ATTR", should_specialize=False)
+"""
 
 
 if __name__ == "__main__":
