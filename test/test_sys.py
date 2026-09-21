@@ -1354,7 +1354,9 @@ class SysModuleTest(unittest.TestCase):
 
 @test.support.cpython_only
 class UnraisableHookTest(unittest.TestCase):
-    def test_original_unraisablehook(self):
+    # Nuitka: Compiled frames are not found by PyThreadState_GetFrame, so no
+    # traceback is created for exceptions raised without one.
+    def notest_original_unraisablehook(self):
         _testcapi = import_helper.import_module('_testcapi')
         from _testcapi import err_writeunraisable, err_formatunraisable
         obj = hex
@@ -1567,7 +1569,9 @@ class SizeofTest(unittest.TestCase):
         self.assertEqual(sys.getsizeof(True), size('') + self.longdigit)
         self.assertEqual(sys.getsizeof(True, -1), size('') + self.longdigit)
 
-    def test_objecttypes(self):
+    # Nuitka: Compiled functions have a different size and iterating an empty
+    # dict constant is optimized into a tuple iterator.
+    def notest_objecttypes(self):
         # check all types defined in Objects/
         calcsize = struct.calcsize
         size = test.support.calcobjsize
@@ -1858,7 +1862,9 @@ class SizeofTest(unittest.TestCase):
             expected += self.gc_headsize
         self.assertEqual(sys.getsizeof(obj), expected)
 
-    def test_slots(self):
+    # Nuitka: The empty frozenset constant is not tracked by the garbage
+    # collector, so the expected size is computed differently.
+    def notest_slots(self):
         # check all subclassable types defined in Objects/ that allow
         # non-empty __slots__
         check = self.check_slots
