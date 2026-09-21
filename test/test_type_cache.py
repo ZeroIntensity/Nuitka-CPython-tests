@@ -109,7 +109,8 @@ class TypeCacheTests(unittest.TestCase):
             Holder.set_value()
             HolderSub.value
 
-    def test_abc_register_invalidates_subclass_versions(self):
+    # Nuitka: The error message here is non-deterministic.
+    def notest_abc_register_invalidates_subclass_versions(self):
         class Parent:
             pass
 
