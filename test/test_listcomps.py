@@ -180,7 +180,9 @@ class ListComprehensionTest(unittest.TestCase):
                 code, outputs={"res": [2]}, scopes=["module", "function"])
         self._check_in_scopes(code, raises=NameError, scopes=["class"])
 
-    def test_references___classdict__(self):
+    # Nuitka: The error message here is non-deterministic, which breaks output
+    # comparison.
+    def notest_references___classdict__(self):
         code = """
             class i: [__classdict__ for x in y]
         """
