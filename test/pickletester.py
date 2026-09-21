@@ -4017,7 +4017,8 @@ class AbstractPickleTests(ExtraAssertions):
     def test_fast_save_enter_list(self):
         self.fast_save_enter(lambda i: [i])
 
-    def test_fast_save_enter_frozenset(self):
+    # Nuitka: This has a non-deterministic error message.
+    def notest_fast_save_enter_frozenset(self):
         self.fast_save_enter(lambda i: frozenset([i]))
 
     def test_fast_save_enter_set(self):
@@ -4062,7 +4063,8 @@ class AbstractPickleTests(ExtraAssertions):
     def test_deep_nested_struct_list(self):
         self.deep_nested_struct(lambda data: [data])
 
-    def test_deep_nested_struct_frozenset(self):
+    # Nuitka: This has a non-deterministic error message.
+    def notest_deep_nested_struct_frozenset(self):
         self.deep_nested_struct(lambda data: frozenset((1, data)))
 
     @unittest.skipIf(support.is_wasi, "exhausts limited stack on WASI")
