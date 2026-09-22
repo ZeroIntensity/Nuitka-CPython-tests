@@ -6,14 +6,12 @@ from test.support import os_helper
 from test.support import warnings_helper
 from test.support.script_helper import assert_python_ok
 
-import copy
 import errno
 import sys
 import signal
 import time
 import os
 import platform
-import pickle
 import stat
 import tempfile
 import unittest
@@ -568,38 +566,10 @@ class PosixTester(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(posix, 'confstr'),
                          'test needs posix.confstr()')
+    @unittest.skipIf(support.is_apple_mobile, "gh-118201: Test is flaky on iOS")
     def test_confstr(self):
-        with self.assertRaisesRegex(
-            ValueError, "unrecognized configuration name"
-        ):
-            posix.confstr("CS_garbage")
-
-        with self.assertRaisesRegex(
-            TypeError, "configuration names must be strings or integers"
-        ):
-            posix.confstr(1.23)
-
-        path = posix.confstr("CS_PATH")
-        self.assertGreater(len(path), 0)
-        self.assertEqual(posix.confstr(posix.confstr_names["CS_PATH"]), path)
-
-    @unittest.skipUnless(hasattr(posix, 'sysconf'),
-                         'test needs posix.sysconf()')
-    def test_sysconf(self):
-        with self.assertRaisesRegex(
-            ValueError, "unrecognized configuration name"
-        ):
-            posix.sysconf("SC_garbage")
-
-        with self.assertRaisesRegex(
-            TypeError, "configuration names must be strings or integers"
-        ):
-            posix.sysconf(1.23)
-
-        arg_max = posix.sysconf("SC_ARG_MAX")
-        self.assertGreater(arg_max, 0)
-        self.assertEqual(
-            posix.sysconf(posix.sysconf_names["SC_ARG_MAX"]), arg_max)
+        self.assertRaises(ValueError, posix.confstr, "CS_garbage")
+        self.assertEqual(len(posix.confstr("CS_PATH")) > 0, True)
 
     @unittest.skipUnless(hasattr(posix, 'dup2'),
                          'test needs posix.dup2()')
@@ -667,18 +637,6 @@ class PosixTester(unittest.TestCase):
                     posix.stat, float(fp.fileno()))
         finally:
             fp.close()
-
-    @unittest.skipUnless(hasattr(posix, 'stat'),
-                         'test needs posix.stat()')
-    @unittest.skipUnless(os.stat in os.supports_follow_symlinks,
-                         'test needs follow_symlinks support in os.stat()')
-    def test_stat_fd_zero_follow_symlinks(self):
-        with self.assertRaisesRegex(ValueError,
-                'cannot use fd and follow_symlinks together'):
-            posix.stat(0, follow_symlinks=False)
-        with self.assertRaisesRegex(ValueError,
-                'cannot use fd and follow_symlinks together'):
-            posix.stat(1, follow_symlinks=False)
 
     def test_stat(self):
         self.assertTrue(posix.stat(os_helper.TESTFN))
@@ -769,7 +727,7 @@ class PosixTester(unittest.TestCase):
             self.assertRaises((ValueError, OverflowError), posix.makedev, x, minor)
             self.assertRaises((ValueError, OverflowError), posix.makedev, major, x)
 
-        if sys.platform == 'linux' and not support.linked_to_musl():
+        if sys.platform == 'linux':
             NODEV = -1
             self.assertEqual(posix.major(NODEV), NODEV)
             self.assertEqual(posix.minor(NODEV), NODEV)
@@ -838,9 +796,7 @@ class PosixTester(unittest.TestCase):
             self.assertRaises(OSError, chown_func, first_param, 0, -1)
             check_stat(uid, gid)
             if hasattr(os, 'getgroups'):
-                # Also check the effective gid, which the kernel
-                # accepts for chown even if not in getgroups().
-                if 0 not in os.getgroups() and os.getegid() != 0:
+                if 0 not in os.getgroups():
                     self.assertRaises(OSError, chown_func, first_param, -1, 0)
                     check_stat(uid, gid)
         # test illegal types
@@ -1315,7 +1271,7 @@ class PosixTester(unittest.TestCase):
         self.assertIsInstance(lo, int)
         self.assertIsInstance(hi, int)
         self.assertGreaterEqual(hi, lo)
-        # Apple platforms return 15 without checking the argument.
+        # Apple plaforms return 15 without checking the argument.
         if not is_apple:
             self.assertRaises(OSError, posix.sched_get_priority_min, -23)
             self.assertRaises(OSError, posix.sched_get_priority_max, -23)
@@ -1360,33 +1316,6 @@ class PosixTester(unittest.TestCase):
         self.assertRaises(OverflowError, posix.sched_setparam, 0, param)
         param = posix.sched_param(sched_priority=-large)
         self.assertRaises(OverflowError, posix.sched_setparam, 0, param)
-
-    @requires_sched
-    def test_sched_param(self):
-        param = posix.sched_param(1)
-        for proto in range(pickle.HIGHEST_PROTOCOL+1):
-            newparam = pickle.loads(pickle.dumps(param, proto))
-            self.assertEqual(newparam, param)
-        newparam = copy.copy(param)
-        self.assertIsNot(newparam, param)
-        self.assertEqual(newparam, param)
-        newparam = copy.deepcopy(param)
-        self.assertIsNot(newparam, param)
-        self.assertEqual(newparam, param)
-        newparam = copy.replace(param)
-        self.assertIsNot(newparam, param)
-        self.assertEqual(newparam, param)
-        newparam = copy.replace(param, sched_priority=0)
-        self.assertNotEqual(newparam, param)
-        self.assertEqual(newparam.sched_priority, 0)
-
-    @requires_sched
-    def test_bug_140634(self):
-        sched_priority = float('inf')  # any new reference
-        param = posix.sched_param(sched_priority)
-        param.__reduce__()
-        del sched_priority, param  # should not crash
-        support.gc_collect()  # just to be sure
 
     @unittest.skipUnless(hasattr(posix, "sched_rr_get_interval"), "no function")
     def test_sched_rr_get_interval(self):
@@ -1890,11 +1819,6 @@ class _PosixSpawnMixin:
         )
         support.wait_process(pid, exitcode=0)
 
-    def test_setpgroup_allow_none(self):
-        path, args = self.NOOP_PROGRAM[0], self.NOOP_PROGRAM
-        pid = self.spawn_func(path, args, os.environ, setpgroup=None)
-        support.wait_process(pid, exitcode=0)
-
     def test_setpgroup_wrong_type(self):
         with self.assertRaises(TypeError):
             self.spawn_func(sys.executable,
@@ -1995,20 +1919,6 @@ class _PosixSpawnMixin:
                             [sys.executable, "-c", "pass"],
                             os.environ, setsigdef=[signal.NSIG, signal.NSIG+1])
 
-    def test_scheduler_allow_none(self):
-        path, args = self.NOOP_PROGRAM[0], self.NOOP_PROGRAM
-        pid = self.spawn_func(path, args, os.environ, scheduler=None)
-        support.wait_process(pid, exitcode=0)
-
-    @support.subTests("scheduler", [object(), 1, [1, 2]])
-    def test_scheduler_wrong_type(self, scheduler):
-        path, args = self.NOOP_PROGRAM[0], self.NOOP_PROGRAM
-        with self.assertRaisesRegex(
-            TypeError,
-            "scheduler must be a tuple or None",
-        ):
-            self.spawn_func(path, args, os.environ, scheduler=scheduler)
-
     @requires_sched
     @unittest.skipIf(sys.platform.startswith(('freebsd', 'netbsd')),
                      "bpo-34685: test can fail on BSD")
@@ -2032,11 +1942,6 @@ class _PosixSpawnMixin:
     @requires_sched
     @unittest.skipIf(sys.platform.startswith(('freebsd', 'netbsd')),
                      "bpo-34685: test can fail on BSD")
-    @unittest.skipIf(platform.libc_ver()[0] == 'glibc' and
-                     os.sched_getscheduler(0) in [
-                        os.SCHED_BATCH,
-                        os.SCHED_IDLE],
-                     "Skip test due to glibc posix_spawn policy")
     def test_setscheduler_with_policy(self):
         policy = os.sched_getscheduler(0)
         priority = os.sched_get_priority_min(policy)

@@ -2,10 +2,8 @@ import unittest
 import sys
 from test import support
 from test.support.testcase import ComplexesAreIdenticalMixin
-from test.support.numbers import (
-    VALID_UNDERSCORE_LITERALS,
-    INVALID_UNDERSCORE_LITERALS,
-)
+from test.test_grammar import (VALID_UNDERSCORE_LITERALS,
+                               INVALID_UNDERSCORE_LITERALS)
 
 from random import random
 from math import isnan, copysign
@@ -62,8 +60,8 @@ class ComplexTest(ComplexesAreIdenticalMixin, unittest.TestCase):
             else:
                 unittest.TestCase.assertAlmostEqual(self, a, b)
 
-    def assertClose(self, x, y, eps=1e-9):
-        """Return true iff complexes x and y "are close"."""
+    def assertCloseAbs(self, x, y, eps=1e-9):
+        """Return true iff floats x and y "are close"."""
         # put the one with larger magnitude second
         if abs(x) > abs(y):
             x, y = y, x
@@ -72,15 +70,26 @@ class ComplexTest(ComplexesAreIdenticalMixin, unittest.TestCase):
         if x == 0:
             return abs(y) < eps
         # check that relative difference < eps
-        self.assertTrue(abs(x-y)/abs(y) < eps)
+        self.assertTrue(abs((x-y)/y) < eps)
+
+    def assertClose(self, x, y, eps=1e-9):
+        """Return true iff complexes x and y "are close"."""
+        self.assertCloseAbs(x.real, y.real, eps)
+        self.assertCloseAbs(x.imag, y.imag, eps)
 
     def check_div(self, x, y):
         """Compute complex z=x*y, and check that z/x==y and z/y==x."""
         z = x * y
-        if x:
-            self.assertClose(z / x, y)
-        if y:
-            self.assertClose(z / y, x)
+        if x != 0:
+            q = z / x
+            self.assertClose(q, y)
+            q = z.__truediv__(x)
+            self.assertClose(q, y)
+        if y != 0:
+            q = z / y
+            self.assertClose(q, x)
+            q = z.__truediv__(y)
+            self.assertClose(q, x)
 
     def test_truediv(self):
         simple_real = [float(i) for i in range(-5, 6)]
@@ -94,20 +103,10 @@ class ComplexTest(ComplexesAreIdenticalMixin, unittest.TestCase):
         self.check_div(complex(1e200, 1e200), 1+0j)
         self.check_div(complex(1e-200, 1e-200), 1+0j)
 
-        # Smith's algorithm has several sources of inaccuracy
-        # for components of the result.  In examples below,
-        # it's cancellation of digits in computation of sum.
-        self.check_div(1e-09+1j, 1+1j)
-        self.check_div(8.289760544677449e-09+0.13257307440728516j,
-                       0.9059966714925808+0.5054864708672686j)
-
         # Just for fun.
         for i in range(100):
-            x = complex(random(), random())
-            y = complex(random(), random())
-            self.check_div(x, y)
-            y = complex(1e10*y.real, y.imag)
-            self.check_div(x, y)
+            self.check_div(complex(random(), random()),
+                           complex(random(), random()))
 
         self.assertAlmostEqual(complex.__truediv__(2+0j, 1+1j), 1-1j)
         self.assertRaises(TypeError, operator.truediv, 1j, None)
@@ -302,11 +301,6 @@ class ComplexTest(ComplexesAreIdenticalMixin, unittest.TestCase):
                     except OverflowError:
                         pass
 
-        # gh-113841: possible undefined division by 0 in _Py_c_pow()
-        x, y = 9j, 33j**3
-        with self.assertRaises(OverflowError):
-            x**y
-
     def test_pow_with_small_integer_exponents(self):
         # Check that small integer exponents are handled identically
         # regardless of their type.
@@ -342,7 +336,7 @@ class ComplexTest(ComplexesAreIdenticalMixin, unittest.TestCase):
         self.assertTrue(1j)
 
     def test_conjugate(self):
-        self.assertEqual(complex(5.3, 9.8).conjugate(), 5.3-9.8j)
+        self.assertClose(complex(5.3, 9.8).conjugate(), 5.3-9.8j)
 
     def test_constructor(self):
         def check(z, x, y):

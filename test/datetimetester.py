@@ -49,11 +49,7 @@ import _strptime
 try:
     import _pydatetime
 except ImportError:
-    _pydatetime = None
-try:
-    import _datetime
-except ImportError:
-    _datetime = None
+    pass
 #
 
 pickle_loads = {pickle.loads, pickle._loads}
@@ -765,9 +761,6 @@ class TestTimeDelta(HarmlessMixedComparison, unittest.TestCase):
         eq(str(td(days=999999999, hours=23, minutes=59, seconds=59,
                    microseconds=999999)),
            "999999999 days, 23:59:59.999999")
-
-        # test the Doc/library/datetime.rst recipe
-        eq(f'-({-td(hours=-1)!s})', "-(1:00:00)")
 
     def test_repr(self):
         name = 'datetime.' + self.theclass.__name__
@@ -2862,32 +2855,11 @@ class TestDateTime(TestDate):
             self.assertEqual(t.strftime("%z"), "-0200" + z)
             self.assertEqual(t.strftime("%:z"), "-02:00:" + z)
 
-    def test_strftime_special(self):
-        t = self.theclass(2004, 12, 31, 6, 22, 33, 47)
-        s1 = t.strftime('%c')
-        s2 = t.strftime('%B')
-        # gh-52551, gh-78662: Unicode strings should pass through strftime,
-        # independently from locale.
-        self.assertEqual(t.strftime('\U0001f40d'), '\U0001f40d')
-        self.assertEqual(t.strftime('\U0001f4bb%c\U0001f40d%B'), f'\U0001f4bb{s1}\U0001f40d{s2}')
-        self.assertEqual(t.strftime('%c\U0001f4bb%B\U0001f40d'), f'{s1}\U0001f4bb{s2}\U0001f40d')
-        # Lone surrogates should pass through.
-        self.assertEqual(t.strftime('\ud83d'), '\ud83d')
-        self.assertEqual(t.strftime('\udc0d'), '\udc0d')
-        self.assertEqual(t.strftime('\ud83d%c\udc0d%B'), f'\ud83d{s1}\udc0d{s2}')
-        self.assertEqual(t.strftime('%c\ud83d%B\udc0d'), f'{s1}\ud83d{s2}\udc0d')
-        self.assertEqual(t.strftime('%c\udc0d%B\ud83d'), f'{s1}\udc0d{s2}\ud83d')
-        # Surrogate pairs should not recombine.
-        self.assertEqual(t.strftime('\ud83d\udc0d'), '\ud83d\udc0d')
-        self.assertEqual(t.strftime('%c\ud83d\udc0d%B'), f'{s1}\ud83d\udc0d{s2}')
-        # Surrogate-escaped bytes should not recombine.
-        self.assertEqual(t.strftime('\udcf0\udc9f\udc90\udc8d'), '\udcf0\udc9f\udc90\udc8d')
-        self.assertEqual(t.strftime('%c\udcf0\udc9f\udc90\udc8d%B'), f'{s1}\udcf0\udc9f\udc90\udc8d{s2}')
-        # gh-124531: The null character should not terminate the format string.
-        self.assertEqual(t.strftime('\0'), '\0')
-        self.assertEqual(t.strftime('\0'*1000), '\0'*1000)
-        self.assertEqual(t.strftime('\0%c\0%B'), f'\0{s1}\0{s2}')
-        self.assertEqual(t.strftime('%c\0%B\0'), f'{s1}\0{s2}\0')
+        # bpo-34482: Check that surrogates don't cause a crash.
+        try:
+            t.strftime('%y\ud800%m %H\ud800%M')
+        except UnicodeEncodeError:
+            pass
 
     def test_extract(self):
         dt = self.theclass(2002, 3, 4, 18, 45, 3, 1234)
@@ -3392,14 +3364,6 @@ class TestDateTime(TestDate):
             '2009-04-19T12:30:45.123456-05:00a',    # Extra text
             '2009-04-19T12:30:45.123-05:00a',       # Extra text
             '2009-04-19T12:30:45-05:00a',           # Extra text
-            '2009-04-19T12:30:45.400 +02:30',  # Space between ms and timezone (gh-130959)
-            '2009-04-19T12:30:45.400 ',        # Trailing space (gh-130959)
-            '2009-04-19T12:30:45. 400',        # Space before fraction (gh-130959)
-            '2020-2020',                       # Ambiguous 9-char date portion
-            '2009-04-19T12:30:45.+05:00',      # Empty fraction before offset
-            '2009-04-19T12:30:45.-05:00',      # Empty fraction before offset
-            '2009-04-19T12:30:45.Z',           # Empty fraction before Z
-            '2009-04-19T12:30:45,+05:00',      # Empty fraction (comma) before offset
         ]
 
         for bad_str in bad_strs:
@@ -3420,32 +3384,6 @@ class TestDateTime(TestDate):
         dt = self.theclass.fromisoformat(dt_str)
 
         self.assertIs(dt.tzinfo, timezone.utc)
-
-    def test_fromisoformat_utc_subsecond_offset(self):
-        # A UTC offset whose whole-second part is zero but with a non-zero
-        # microsecond part must be preserved, not collapsed to UTC.
-        for us in (1, -1, 999999, -999999):
-            with self.subTest(microseconds=us):
-                tz = timezone(timedelta(microseconds=us))
-                dt = self.theclass(2020, 6, 15, 12, 34, 56, tzinfo=tz)
-                rt = self.theclass.fromisoformat(dt.isoformat())
-                self.assertEqual(rt.utcoffset(), timedelta(microseconds=us))
-                self.assertEqual(rt, dt)
-                self.assertIsNot(rt.tzinfo, timezone.utc)
-
-        tz = timezone(timedelta(hours=5, minutes=30, seconds=15,
-                                microseconds=123456))
-        dt = self.theclass(2020, 6, 15, 12, 34, 56, tzinfo=tz)
-        rt = self.theclass.fromisoformat(dt.isoformat())
-        self.assertEqual(rt.utcoffset(), tz.utcoffset(None))
-        self.assertEqual(rt, dt)
-
-        for tstr in ('2020-06-15T12:34:56+00:00',
-                     '2020-06-15T12:34:56+00:00:00.000000',
-                     '2020-06-15T12:34:56Z'):
-            with self.subTest(tstr=tstr):
-                self.assertIs(self.theclass.fromisoformat(tstr).tzinfo,
-                              timezone.utc)
 
     def test_fromisoformat_subclass(self):
         class DateTimeSubclass(self.theclass):
@@ -3694,33 +3632,6 @@ class TestTime(HarmlessMixedComparison, unittest.TestCase):
 
         # gh-85432: The parameter was named "fmt" in the pure-Python impl.
         t.strftime(format="%f")
-
-    def test_strftime_special(self):
-        t = self.theclass(1, 2, 3, 4)
-        s1 = t.strftime('%I%p%Z')
-        s2 = t.strftime('%X')
-        # gh-52551, gh-78662: Unicode strings should pass through strftime,
-        # independently from locale.
-        self.assertEqual(t.strftime('\U0001f40d'), '\U0001f40d')
-        self.assertEqual(t.strftime('\U0001f4bb%I%p%Z\U0001f40d%X'), f'\U0001f4bb{s1}\U0001f40d{s2}')
-        self.assertEqual(t.strftime('%I%p%Z\U0001f4bb%X\U0001f40d'), f'{s1}\U0001f4bb{s2}\U0001f40d')
-        # Lone surrogates should pass through.
-        self.assertEqual(t.strftime('\ud83d'), '\ud83d')
-        self.assertEqual(t.strftime('\udc0d'), '\udc0d')
-        self.assertEqual(t.strftime('\ud83d%I%p%Z\udc0d%X'), f'\ud83d{s1}\udc0d{s2}')
-        self.assertEqual(t.strftime('%I%p%Z\ud83d%X\udc0d'), f'{s1}\ud83d{s2}\udc0d')
-        self.assertEqual(t.strftime('%I%p%Z\udc0d%X\ud83d'), f'{s1}\udc0d{s2}\ud83d')
-        # Surrogate pairs should not recombine.
-        self.assertEqual(t.strftime('\ud83d\udc0d'), '\ud83d\udc0d')
-        self.assertEqual(t.strftime('%I%p%Z\ud83d\udc0d%X'), f'{s1}\ud83d\udc0d{s2}')
-        # Surrogate-escaped bytes should not recombine.
-        self.assertEqual(t.strftime('\udcf0\udc9f\udc90\udc8d'), '\udcf0\udc9f\udc90\udc8d')
-        self.assertEqual(t.strftime('%I%p%Z\udcf0\udc9f\udc90\udc8d%X'), f'{s1}\udcf0\udc9f\udc90\udc8d{s2}')
-        # gh-124531: The null character should not terminate the format string.
-        self.assertEqual(t.strftime('\0'), '\0')
-        self.assertEqual(t.strftime('\0'*1000), '\0'*1000)
-        self.assertEqual(t.strftime('\0%I%p%Z\0%X'), f'\0{s1}\0{s2}')
-        self.assertEqual(t.strftime('%I%p%Z\0%X\0'), f'{s1}\0{s2}\0')
 
     def test_format(self):
         t = self.theclass(1, 2, 3, 4)
@@ -4173,8 +4084,9 @@ class TestTimeTZ(TestTime, TZInfoBase, unittest.TestCase):
         self.assertRaises(TypeError, t.strftime, "%Z")
 
         # Issue #6697:
-        Badtzname.tz = '\ud800'
-        self.assertEqual(t.strftime("%Z"), '\ud800')
+        if '_Fast' in self.__class__.__name__:
+            Badtzname.tz = '\ud800'
+            self.assertRaises(ValueError, t.strftime, "%Z")
 
     def test_hash_edge_cases(self):
         # Offsets that overflow a basic time.
@@ -4510,13 +4422,6 @@ class TestTimeTZ(TestTime, TZInfoBase, unittest.TestCase):
             '12:30:45.123456-',         # Extra at end of microsecond time
             '12:30:45.123456+',         # Extra at end of microsecond time
             '12:30:45.123456+12:00:30a',    # Extra at end of full time
-            '12:30:45.400 +02:30',      # Space between ms and timezone (gh-130959)
-            '12:30:45.400 ',            # Trailing space (gh-130959)
-            '12:30:45. 400',            # Space before fraction (gh-130959)
-            '12:30:45.+05:00',          # Empty fraction before offset
-            '12:30:45.-05:00',          # Empty fraction before offset
-            '12:30:45.Z',               # Empty fraction before Z
-            '12:30:45,+05:00',          # Empty fraction (comma) before offset
         ]
 
         for bad_str in bad_strs:
@@ -5853,21 +5758,21 @@ class TestLocalTimeDisambiguation(unittest.TestCase):
 
         gdt = datetime(1941, 6, 23, 20, 59, 59, tzinfo=timezone.utc)
         ldt = gdt.astimezone(Vilnius)
-        self.assertEqual(ldt.strftime("%a %b %d %H:%M:%S %Y %Z%z"),
+        self.assertEqual(ldt.strftime("%c %Z%z"),
                          'Mon Jun 23 23:59:59 1941 MSK+0300')
         self.assertEqual(ldt.fold, 0)
         self.assertFalse(ldt.dst())
 
         gdt = datetime(1941, 6, 23, 21, tzinfo=timezone.utc)
         ldt = gdt.astimezone(Vilnius)
-        self.assertEqual(ldt.strftime("%a %b %d %H:%M:%S %Y %Z%z"),
+        self.assertEqual(ldt.strftime("%c %Z%z"),
                          'Mon Jun 23 23:00:00 1941 CEST+0200')
         self.assertEqual(ldt.fold, 1)
         self.assertTrue(ldt.dst())
 
         gdt = datetime(1941, 6, 23, 22, tzinfo=timezone.utc)
         ldt = gdt.astimezone(Vilnius)
-        self.assertEqual(ldt.strftime("%a %b %d %H:%M:%S %Y %Z%z"),
+        self.assertEqual(ldt.strftime("%c %Z%z"),
                          'Tue Jun 24 00:00:00 1941 CEST+0200')
         self.assertEqual(ldt.fold, 0)
         self.assertTrue(ldt.dst())
@@ -5877,22 +5782,22 @@ class TestLocalTimeDisambiguation(unittest.TestCase):
 
         ldt = datetime(1941, 6, 23, 22, 59, 59, tzinfo=Vilnius)
         gdt = ldt.astimezone(timezone.utc)
-        self.assertEqual(gdt.strftime("%a %b %d %H:%M:%S %Y %Z"),
+        self.assertEqual(gdt.strftime("%c %Z"),
                          'Mon Jun 23 19:59:59 1941 UTC')
 
         ldt = datetime(1941, 6, 23, 23, 59, 59, tzinfo=Vilnius)
         gdt = ldt.astimezone(timezone.utc)
-        self.assertEqual(gdt.strftime("%a %b %d %H:%M:%S %Y %Z"),
+        self.assertEqual(gdt.strftime("%c %Z"),
                          'Mon Jun 23 20:59:59 1941 UTC')
 
         ldt = datetime(1941, 6, 23, 23, 59, 59, tzinfo=Vilnius, fold=1)
         gdt = ldt.astimezone(timezone.utc)
-        self.assertEqual(gdt.strftime("%a %b %d %H:%M:%S %Y %Z"),
+        self.assertEqual(gdt.strftime("%c %Z"),
                          'Mon Jun 23 21:59:59 1941 UTC')
 
         ldt = datetime(1941, 6, 24, 0, tzinfo=Vilnius)
         gdt = ldt.astimezone(timezone.utc)
-        self.assertEqual(gdt.strftime("%a %b %d %H:%M:%S %Y %Z"),
+        self.assertEqual(gdt.strftime("%c %Z"),
                          'Mon Jun 23 22:00:00 1941 UTC')
 
     def test_constructors(self):

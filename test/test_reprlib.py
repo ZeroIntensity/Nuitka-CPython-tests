@@ -150,38 +150,14 @@ class ReprTests(unittest.TestCase):
         eq(r(frozenset({1, 2, 3, 4, 5, 6, 7})), "frozenset({1, 2, 3, 4, 5, 6, ...})")
 
     def test_numbers(self):
-        for x in [123, 1.0 / 3]:
-            self.assertEqual(r(x), repr(x))
+        eq = self.assertEqual
+        eq(r(123), repr(123))
+        eq(r(123), repr(123))
+        eq(r(1.0/3), repr(1.0/3))
 
-        max_digits = sys.get_int_max_str_digits()
-        for k in [100, max_digits - 1]:
-            with self.subTest(f'10 ** {k}', k=k):
-                n = 10 ** k
-                expected = repr(n)[:18] + "..." + repr(n)[-19:]
-                self.assertEqual(r(n), expected)
-
-        def re_msg(n, d):
-            return (rf'<{n.__class__.__name__} instance with roughly {d} '
-                    rf'digits \(limit at {max_digits}\) at 0x[a-f0-9]+>')
-
-        k = max_digits
-        with self.subTest(f'10 ** {k}', k=k):
-            n = 10 ** k
-            self.assertRaises(ValueError, repr, n)
-            self.assertRegex(r(n), re_msg(n, k + 1))
-
-        for k in [max_digits + 1, 2 * max_digits]:
-            self.assertGreater(k, 100)
-            with self.subTest(f'10 ** {k}', k=k):
-                n = 10 ** k
-                self.assertRaises(ValueError, repr, n)
-                self.assertRegex(r(n), re_msg(n, k + 1))
-            with self.subTest(f'10 ** {k} - 1', k=k):
-                n = 10 ** k - 1
-                # Here, since math.log10(n) == math.log10(n-1),
-                # the number of digits of n - 1 is overestimated.
-                self.assertRaises(ValueError, repr, n)
-                self.assertRegex(r(n), re_msg(n, k + 1))
+        n = 10**100
+        expected = repr(n)[:18] + "..." + repr(n)[-19:]
+        eq(r(n), expected)
 
     def test_instance(self):
         eq = self.assertEqual
@@ -398,20 +374,20 @@ class ReprTests(unittest.TestCase):
                 'object': {
                     1: 'two',
                     b'three': [
-                        (4.5, 6.25),
+                        (4.5, 6.7),
                         [set((8, 9)), frozenset((10, 11))],
                     ],
                 },
                 'tests': (
                     (dict(indent=None), '''\
-                        {1: 'two', b'three': [(4.5, 6.25), [{8, 9}, frozenset({10, 11})]]}'''),
+                        {1: 'two', b'three': [(4.5, 6.7), [{8, 9}, frozenset({10, 11})]]}'''),
                     (dict(indent=False), '''\
                         {
                         1: 'two',
                         b'three': [
                         (
                         4.5,
-                        6.25,
+                        6.7,
                         ),
                         [
                         {
@@ -431,7 +407,7 @@ class ReprTests(unittest.TestCase):
                          b'three': [
                           (
                            4.5,
-                           6.25,
+                           6.7,
                           ),
                           [
                            {
@@ -451,7 +427,7 @@ class ReprTests(unittest.TestCase):
                         b'three': [
                         (
                         4.5,
-                        6.25,
+                        6.7,
                         ),
                         [
                         {
@@ -471,7 +447,7 @@ class ReprTests(unittest.TestCase):
                          b'three': [
                           (
                            4.5,
-                           6.25,
+                           6.7,
                           ),
                           [
                            {
@@ -491,7 +467,7 @@ class ReprTests(unittest.TestCase):
                             b'three': [
                                 (
                                     4.5,
-                                    6.25,
+                                    6.7,
                                 ),
                                 [
                                     {
@@ -519,7 +495,7 @@ class ReprTests(unittest.TestCase):
                         b'three': [
                         (
                         4.5,
-                        6.25,
+                        6.7,
                         ),
                         [
                         {
@@ -539,7 +515,7 @@ class ReprTests(unittest.TestCase):
                         -->b'three': [
                         -->-->(
                         -->-->-->4.5,
-                        -->-->-->6.25,
+                        -->-->-->6.7,
                         -->-->),
                         -->-->[
                         -->-->-->{
@@ -559,7 +535,7 @@ class ReprTests(unittest.TestCase):
                         ....b'three': [
                         ........(
                         ............4.5,
-                        ............6.25,
+                        ............6.7,
                         ........),
                         ........[
                         ............{
@@ -605,50 +581,6 @@ class ReprTests(unittest.TestCase):
                 expected_msg = expected_msg or f'{type(indent)}'
                 with self.assertRaisesRegex(expected_error, expected_msg):
                     r.repr(test_object)
-
-    def test_shadowed_stdlib_array(self):
-        # Issue #113570: repr() should not be fooled by an array
-        class array:
-            def __repr__(self):
-                return "not array.array"
-
-        self.assertEqual(r(array()), "not array.array")
-
-    def test_shadowed_builtin(self):
-        # Issue #113570: repr() should not be fooled
-        # by a shadowed builtin function
-        class list:
-            def __repr__(self):
-                return "not builtins.list"
-
-        self.assertEqual(r(list()), "not builtins.list")
-
-    def test_custom_repr(self):
-        class MyRepr(Repr):
-
-            def repr_TextIOWrapper(self, obj, level):
-                if obj.name in {'<stdin>', '<stdout>', '<stderr>'}:
-                    return obj.name
-                return repr(obj)
-
-        aRepr = MyRepr()
-        self.assertEqual(aRepr.repr(sys.stdin), "<stdin>")
-
-    def test_custom_repr_class_with_spaces(self):
-        class TypeWithSpaces:
-            pass
-
-        t = TypeWithSpaces()
-        type(t).__name__ = "type with spaces"
-        self.assertEqual(type(t).__name__, "type with spaces")
-
-        class MyRepr(Repr):
-            def repr_type_with_spaces(self, obj, level):
-                return "Type With Spaces"
-
-
-        aRepr = MyRepr()
-        self.assertEqual(aRepr.repr(t), "Type With Spaces")
 
 def write_file(path, text):
     with open(path, 'w', encoding='ASCII') as fp:

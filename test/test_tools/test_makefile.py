@@ -48,17 +48,11 @@ class TestMakefile(unittest.TestCase):
             if dirname == '__pycache__' or dirname.startswith('.'):
                 dirs.clear()  # do not process subfolders
                 continue
-
-            # Skip empty dirs (ignoring hidden files and __pycache__):
-            files = [
-                filename for filename in files
-                if not filename.startswith('.')
-            ]
-            dirs = [
-                dirname for dirname in dirs
-                if not dirname.startswith('.') and dirname != "__pycache__"
-            ]
+            # Skip empty dirs:
             if not dirs and not files:
+                continue
+            # Skip dirs with hidden-only files:
+            if files and all(filename.startswith('.') for filename in files):
                 continue
 
             relpath = os.path.relpath(dirpath, support.STDLIB_DIR)

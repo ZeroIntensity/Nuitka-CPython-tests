@@ -8,15 +8,11 @@ import types
 import unittest
 
 from test import support
-from test.support import findfile, MS_WINDOWS
+from test.support import findfile
 
 
 if not support.has_subprocess_support:
     raise unittest.SkipTest("test module requires subprocess")
-if not sysconfig.get_config_var('WITH_DTRACE'):
-    raise unittest.SkipTest(
-        "CPython must be configured with the --with-dtrace option."
-    )
 
 
 def abspath(filename):
@@ -107,7 +103,6 @@ class SystemTapBackend(TraceBackend):
     COMMAND = ["stap", "-g"]
 
 
-@unittest.skipIf(MS_WINDOWS, "Tests not compliant with trace on Windows.")
 class TraceTests:
     # unittest.TestCase options
     maxDiff = None
@@ -182,9 +177,12 @@ class SystemTapOptimizedTests(TraceTests, unittest.TestCase):
 class CheckDtraceProbes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        readelf_major_version, readelf_minor_version = cls.get_readelf_version()
-        if support.verbose:
-            print(f"readelf version: {readelf_major_version}.{readelf_minor_version}")
+        if sysconfig.get_config_var('WITH_DTRACE'):
+            readelf_major_version, readelf_minor_version = cls.get_readelf_version()
+            if support.verbose:
+                print(f"readelf version: {readelf_major_version}.{readelf_minor_version}")
+        else:
+            raise unittest.SkipTest("CPython must be configured with the --with-dtrace option.")
 
 
     @staticmethod

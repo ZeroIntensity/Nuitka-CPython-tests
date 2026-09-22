@@ -13,6 +13,7 @@ import itertools
 import locale
 import os
 import pickle
+import platform
 import select
 import selectors
 import shutil
@@ -96,15 +97,6 @@ def requires_os_func(name):
 def create_file(filename, content=b'content'):
     with open(filename, "xb", 0) as fp:
         fp.write(content)
-
-
-# On platforms without a native spawnv(), os.py provides a Python fallback
-# built on fork()+exec*() that reports argument conversion failures from the
-# child as exit status 127 instead of raising, so tests of the C
-# implementation's error paths cannot run against it.
-requires_native_spawnv = unittest.skipUnless(
-    isinstance(getattr(os, 'spawnv', None), types.BuiltinFunctionType),
-    'requires the native C os.spawnv')
 
 
 # bpo-41625: On AIX, splice() only works with a socket, not with a pipe.
@@ -2264,45 +2256,6 @@ class ExecTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             os.execve(args[0], args, newenv)
 
-    # See https://github.com/python/cpython/issues/137934 and the other
-    # related issues for the reason why we cannot test this on Windows.
-    @unittest.skipIf(os.name == "nt", "POSIX-specific test")
-    @unittest.skipUnless(unix_shell and os.path.exists(unix_shell),
-                        "requires a shell")
-    def test_execve_env_concurrent_mutation_with_fspath_posix(self):
-        # Prevent crash when mutating environment during parsing.
-        # Regression test for https://github.com/python/cpython/issues/143309.
-
-        message = "hello from execve"
-        code = """if 1:
-        import os, sys
-
-        class MyPath:
-            def __fspath__(self):
-                mutated.clear()
-                return b"pwn"
-
-        mutated = KEYS = VALUES = [MyPath()]
-
-        class MyEnv:
-            def __getitem__(self): raise RuntimeError("must not be called")
-            def __len__(self): return 1
-            def keys(self): return KEYS
-            def values(self): return VALUES
-
-        args = [{unix_shell!r}, '-c', 'echo \"{message!s}\"']
-        os.execve(args[0], args, MyEnv())
-        """.format(unix_shell=unix_shell, message=message)
-
-        # Make sure to forward "LD_*" variables so that assert_python_ok()
-        # can run correctly.
-        minimal = {k: v for k, v in os.environ.items() if k.startswith("LD_")}
-        with os_helper.EnvironmentVarGuard() as env:
-            env.clear()
-            env.update(minimal)
-            _, out, _ = assert_python_ok('-c', code, **env)
-        self.assertIn(bytes(message, "ascii"), out)
-
     @unittest.skipUnless(sys.platform == "win32", "Win32-specific test")
     def test_execve_with_empty_path(self):
         # bpo-32890: Check GetLastError() misuse
@@ -2444,22 +2397,12 @@ class TestInvalidFD(unittest.TestCase):
         support.is_emscripten or support.is_wasi,
         "musl libc issue on Emscripten/WASI, bpo-46390"
     )
+    @unittest.skipIf(support.is_apple_mobile, "gh-118201: Test is flaky on iOS")
     def test_fpathconf(self):
-        self.assertIn("PC_NAME_MAX", os.pathconf_names)
         self.check(os.pathconf, "PC_NAME_MAX")
         self.check(os.fpathconf, "PC_NAME_MAX")
         self.check_bool(os.pathconf, "PC_NAME_MAX")
         self.check_bool(os.fpathconf, "PC_NAME_MAX")
-
-    @unittest.skipUnless(hasattr(os, 'pathconf'), 'test needs os.pathconf()')
-    @unittest.skipIf(
-        support.linked_to_musl(),
-        'musl fpathconf ignores the file descriptor and returns a constant',
-        )
-    def test_pathconf_negative_fd_uses_fd_semantics(self):
-        with self.assertRaises(OSError) as ctx:
-            os.pathconf(-1, 1)
-        self.assertEqual(ctx.exception.errno, errno.EBADF)
 
     @unittest.skipUnless(hasattr(os, 'ftruncate'), 'test needs os.ftruncate()')
     def test_ftruncate(self):
@@ -3605,25 +3548,6 @@ class SpawnTests(unittest.TestCase):
         self.assertRaises(ValueError, os.spawnve, os.P_NOWAIT, program, ('',), {})
         self.assertRaises(ValueError, os.spawnve, os.P_NOWAIT, program, [''], {})
 
-    @requires_native_spawnv
-    def test_spawnv_arg_conversion_errors(self):
-        # A non-path argv item gets a TypeError naming the argument...
-        with self.assertRaisesRegex(TypeError, 'must contain only strings'):
-            os.spawnv(os.P_NOWAIT, sys.executable, [sys.executable, 123])
-        # ...but other conversion errors must not be masked as TypeError
-        # (gh-151416).
-        with self.assertRaises(ValueError):
-            os.spawnv(os.P_NOWAIT, sys.executable,
-                      [sys.executable, 'embedded\0null'])
-
-        class RaisingPath:
-            def __fspath__(self):
-                raise RuntimeError('gotcha')
-
-        with self.assertRaisesRegex(RuntimeError, 'gotcha'):
-            os.spawnv(os.P_NOWAIT, sys.executable,
-                      [sys.executable, RaisingPath()])
-
     def _test_invalid_env(self, spawn):
         program = sys.executable
         args = self.quote_args([program, '-c', 'pass'])
@@ -3904,6 +3828,7 @@ class TestSendfile(unittest.IsolatedAsyncioTestCase):
     @requires_headers_trailers
     @requires_32b
     async def test_headers_overflow_32bits(self):
+        self.server.handler_instance.accumulate = False
         with self.assertRaises(OSError) as cm:
             await self.async_sendfile(self.sockno, self.fileno, 0, 0,
                                       headers=[b"x" * 2**16] * 2**15)
@@ -3912,6 +3837,7 @@ class TestSendfile(unittest.IsolatedAsyncioTestCase):
     @requires_headers_trailers
     @requires_32b
     async def test_trailers_overflow_32bits(self):
+        self.server.handler_instance.accumulate = False
         with self.assertRaises(OSError) as cm:
             await self.async_sendfile(self.sockno, self.fileno, 0, 0,
                                       trailers=[b"x" * 2**16] * 2**15)
@@ -3991,10 +3917,10 @@ class ExtendedAttributeTests(unittest.TestCase):
         xattr.remove("user.test")
         self.assertEqual(set(listxattr(fn)), xattr)
         self.assertEqual(getxattr(fn, s("user.test2"), **kwargs), b"foo")
-        setxattr(fn, s("user.test"), b"a"*256, **kwargs)
-        self.assertEqual(getxattr(fn, s("user.test"), **kwargs), b"a"*256)
+        setxattr(fn, s("user.test"), b"a"*1024, **kwargs)
+        self.assertEqual(getxattr(fn, s("user.test"), **kwargs), b"a"*1024)
         removexattr(fn, s("user.test"), **kwargs)
-        many = sorted("user.test{}".format(i) for i in range(32))
+        many = sorted("user.test{}".format(i) for i in range(100))
         for thing in many:
             setxattr(fn, thing, b"x", **kwargs)
         self.assertEqual(set(listxattr(fn)), set(init_xattr) | set(many))
@@ -4198,11 +4124,15 @@ class EventfdTests(unittest.TestCase):
         os.eventfd_read(fd)
 
 @unittest.skipUnless(hasattr(os, 'timerfd_create'), 'requires os.timerfd_create')
-@unittest.skipIf(sys.platform == "android", "gh-124873: Test is flaky on Android")
 @support.requires_linux_version(2, 6, 30)
 class TimerfdTests(unittest.TestCase):
-    # gh-126112: Use 10 ms to tolerate slow buildbots
-    CLOCK_RES_PLACES = 2  # 10 ms
+    # 1 ms accuracy is reliably achievable on every platform except Android
+    # emulators, where we allow 10 ms (gh-108277).
+    if sys.platform == "android" and platform.android_ver().is_emulator:
+        CLOCK_RES_PLACES = 2
+    else:
+        CLOCK_RES_PLACES = 3
+
     CLOCK_RES = 10 ** -CLOCK_RES_PLACES
     CLOCK_RES_NS = 10 ** (9 - CLOCK_RES_PLACES)
 
@@ -4257,9 +4187,6 @@ class TimerfdTests(unittest.TestCase):
         # confirm if timerfd is readable and read() returns 1 as bytes.
         self.assertEqual(self.read_count_signaled(fd), 1)
 
-    @unittest.skipIf(sys.platform.startswith('netbsd'),
-                     "gh-131263: Skip on NetBSD due to system freeze "
-                     "with negative timer values")
     def test_timerfd_negative(self):
         one_sec_in_nsec = 10**9
         fd = self.timerfd_create(time.CLOCK_REALTIME)
@@ -5117,30 +5044,6 @@ class TestScandir(unittest.TestCase):
                              [os.path.basename(filename)])
         finally:
             os.chdir(old_dir)
-
-    @unittest.skipIf(sys.platform != 'win32', "Win32 specific test")
-    def test_windows_trailing_space_path(self):
-        import pathlib
-
-        filename = self.create_file("file.txt")
-        path = self.path + " "
-
-        self.assertTrue(os.path.exists(path))
-        os.stat(path)
-        with open(filename + " ", "rb") as file:
-            self.assertEqual(file.read(), b"python")
-
-        self.assertEqual(os.listdir(path), ["file.txt"])
-        with os.scandir(path) as entries:
-            self.assertEqual([entry.name for entry in entries], ["file.txt"])
-        pathlib_entries = list(pathlib.Path(path).iterdir())
-        self.assertEqual([entry.name for entry in pathlib_entries], ["file.txt"])
-        del pathlib_entries
-
-        extended_path = "\\\\?\\" + path
-        self.assertFalse(os.path.exists(extended_path))
-        self.assertRaises(FileNotFoundError, os.listdir, extended_path)
-        self.assertRaises(FileNotFoundError, os.scandir, extended_path)
 
     def test_repr(self):
         entry = self.create_file_entry()

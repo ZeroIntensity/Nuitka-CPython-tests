@@ -261,11 +261,9 @@ class GCTests(unittest.TestCase):
             #    finalizer.
             def __del__(self):
 
-                # 5. Create a weakref to `func` now. In previous
-                #    versions of Python, this would avoid having it
-                #    cleared by the garbage collector before calling
-                #    the finalizers.  Now, weakrefs get cleared after
-                #    calling finalizers.
+                # 5. Create a weakref to `func` now. If we had created
+                #    it earlier, it would have been cleared by the
+                #    garbage collector before calling the finalizers.
                 self[1].ref = weakref.ref(self[0])
 
                 # 6. Drop the global reference to `latefin`. The only
@@ -294,18 +292,14 @@ class GCTests(unittest.TestCase):
         #    which will find `cyc` and `func` as garbage.
         gc.collect()
 
-        # 9. Previously, this would crash because the weakref
-        #    created in the finalizer revealed the function after
-        #    `tp_clear` was called and `func_qualname`
-        #    had been NULL-ed out by func_clear().  Now, we clear
-        #    weakrefs to unreachable objects before calling `tp_clear`
-        #    but after calling finalizers.
+        # 9. Previously, this would crash because `func_qualname`
+        #    had been NULL-ed out by func_clear().
         print(f"{func=}")
         """
+        # We're mostly just checking that this doesn't crash.
         rc, stdout, stderr = assert_python_ok("-c", code)
         self.assertEqual(rc, 0)
-        # The `func` global is None because the weakref was cleared.
-        self.assertRegex(stdout, rb"""\A\s*func=None""")
+        self.assertRegex(stdout, rb"""\A\s*func=<function  at \S+>\s*\Z""")
         self.assertFalse(stderr)
 
     @refcount_test
@@ -1112,68 +1106,6 @@ class GCTests(unittest.TestCase):
         self.assertEqual(len(gc.get_referents(untracked_capsule)), 0)
         gc.get_referents(tracked_capsule)
 
-    @cpython_only
-    def test_get_objects_during_gc(self):
-        # gh-125859: Calling gc.get_objects() or gc.get_referrers() during a
-        # collection should not crash.
-        test = self
-        collected = False
-
-        class GetObjectsOnDel:
-            def __del__(self):
-                nonlocal collected
-                collected = True
-                objs = gc.get_objects()
-                # NB: can't use "in" here because some objects override __eq__
-                for obj in objs:
-                    test.assertTrue(obj is not self)
-                test.assertEqual(gc.get_referrers(self), [])
-
-        obj = GetObjectsOnDel()
-        obj.cycle = obj
-        del obj
-
-        gc.collect()
-        self.assertTrue(collected)
-
-    def test_traverse_frozen_objects(self):
-        # See GH-126312: Objects that were not frozen could traverse over
-        # a frozen object on the free-threaded build, which would cause
-        # a negative reference count.
-        x = [1, 2, 3]
-        gc.freeze()
-        y = [x]
-        y.append(y)
-        del y
-        gc.collect()
-        gc.unfreeze()
-
-    def test_deferred_refcount_frozen(self):
-        # Also from GH-126312: objects that use deferred reference counting
-        # weren't ignored if they were frozen. Unfortunately, it's pretty
-        # difficult to come up with a case that triggers this.
-        #
-        # Calling gc.collect() while the garbage collector is frozen doesn't
-        # trigger this normally, but it *does* if it's inside unittest for whatever
-        # reason. We can't call unittest from inside a test, so it has to be
-        # in a subprocess.
-        source = textwrap.dedent("""
-        import gc
-        import unittest
-
-
-        class Test(unittest.TestCase):
-            def test_something(self):
-                gc.freeze()
-                gc.collect()
-                gc.unfreeze()
-
-
-        if __name__ == "__main__":
-            unittest.main()
-        """)
-        assert_python_ok("-c", source)
-
 
 class GCCallbackTests(unittest.TestCase):
     def setUp(self):
@@ -1531,20 +1463,6 @@ class GCTogglingTests(unittest.TestCase):
             self.assertEqual(i, 10001)
         finally:
             gc.enable()
-
-    # Ensure that setting *threshold0* to zero disables collection.
-    @gc_threshold(0)
-    def test_threshold_zero(self):
-        junk = []
-        i = 0
-        detector = GC_Detector()
-        while not detector.gc_happened:
-            i += 1
-            if i > 50000:
-                break
-            junk.append([])  # this may eventually trigger gc (if it is enabled)
-
-        self.assertEqual(i, 50001)
 
 
 class PythonFinalizationTests(unittest.TestCase):

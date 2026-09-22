@@ -1,9 +1,7 @@
 from collections import namedtuple
 import contextlib
-import errno
 import json
 import io
-import logging
 import os
 import os.path
 import pickle
@@ -56,7 +54,7 @@ def _close_file(file):
         else:
             os.close(file)
     except OSError as exc:
-        if exc.errno != errno.EBADF:
+        if exc.errno != 9:
             raise  # re-raise
         # It was closed already.
 
@@ -71,8 +69,8 @@ def pack_exception(exc=None):
 def unpack_exception(packed):
     try:
         data = json.loads(packed)
-    except json.decoder.JSONDecodeError as e:
-        logging.getLogger(__name__).warning('incomplete exception data', exc_info=e)
+    except json.decoder.JSONDecodeError:
+        warnings.warn('incomplete exception data', RuntimeWarning)
         print(packed if isinstance(packed, str) else packed.decode('utf-8'))
         return None
     exc = types.SimpleNamespace(**data)

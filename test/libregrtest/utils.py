@@ -13,7 +13,7 @@ import sys
 import sysconfig
 import tempfile
 import textwrap
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from test import support
 from test.support import os_helper
@@ -32,7 +32,7 @@ WORKER_WORK_DIR_PREFIX = WORK_DIR_PREFIX + 'worker_'
 EXIT_TIMEOUT = 120.0
 
 
-ALL_RESOURCES = ('audio', 'console', 'curses', 'largefile', 'network',
+ALL_RESOURCES = ('audio', 'curses', 'largefile', 'network',
                  'decimal', 'cpu', 'subprocess', 'urlfetch', 'gui', 'walltime')
 
 # Other resources excluded from --use=all:
@@ -42,7 +42,7 @@ ALL_RESOURCES = ('audio', 'console', 'curses', 'largefile', 'network',
 # - tzdata: while needed to validate fully test_datetime, it makes
 #   test_datetime too slow (15-20 min on some buildbots) and so is disabled by
 #   default (see bpo-30822).
-RESOURCE_NAMES = ALL_RESOURCES + ('extralargefile', 'tzdata', 'xpickle', 'wantobjects')
+RESOURCE_NAMES = ALL_RESOURCES + ('extralargefile', 'tzdata')
 
 
 # Types for types hints
@@ -58,7 +58,7 @@ FilterTuple = tuple[TestName, ...]
 FilterDict = dict[TestName, FilterTuple]
 
 
-def format_duration(seconds: float) -> str:
+def format_duration(seconds):
     ms = math.ceil(seconds * 1e3)
     seconds, ms = divmod(ms, 1000)
     minutes, seconds = divmod(seconds, 60)
@@ -92,7 +92,7 @@ def strip_py_suffix(names: list[str] | None) -> None:
             names[idx] = basename
 
 
-def plural(n: int, singular: str, plural: str | None = None) -> str:
+def plural(n, singular, plural=None):
     if n == 1:
         return singular
     elif plural is not None:
@@ -101,7 +101,7 @@ def plural(n: int, singular: str, plural: str | None = None) -> str:
         return singular + 's'
 
 
-def count(n: int, word: str) -> str:
+def count(n, word):
     if n == 1:
         return f"{n} {word}"
     else:
@@ -123,14 +123,14 @@ def printlist(x, width=70, indent=4, file=None):
           file=file)
 
 
-def print_warning(msg: str) -> None:
+def print_warning(msg):
     support.print_warning(msg)
 
 
-orig_unraisablehook: Callable[..., None] | None = None
+orig_unraisablehook = None
 
 
-def regrtest_unraisable_hook(unraisable) -> None:
+def regrtest_unraisable_hook(unraisable):
     global orig_unraisablehook
     support.environment_altered = True
     support.print_warning("Unraisable exception")
@@ -138,23 +138,22 @@ def regrtest_unraisable_hook(unraisable) -> None:
     try:
         support.flush_std_streams()
         sys.stderr = support.print_warning.orig_stderr
-        assert orig_unraisablehook is not None, "orig_unraisablehook not set"
         orig_unraisablehook(unraisable)
         sys.stderr.flush()
     finally:
         sys.stderr = old_stderr
 
 
-def setup_unraisable_hook() -> None:
+def setup_unraisable_hook():
     global orig_unraisablehook
     orig_unraisablehook = sys.unraisablehook
     sys.unraisablehook = regrtest_unraisable_hook
 
 
-orig_threading_excepthook: Callable[..., object] | None = None
+orig_threading_excepthook = None
 
 
-def regrtest_threading_excepthook(args) -> None:
+def regrtest_threading_excepthook(args):
     global orig_threading_excepthook
     support.environment_altered = True
     support.print_warning(f"Uncaught thread exception: {args.exc_type.__name__}")
@@ -162,14 +161,13 @@ def regrtest_threading_excepthook(args) -> None:
     try:
         support.flush_std_streams()
         sys.stderr = support.print_warning.orig_stderr
-        assert orig_threading_excepthook is not None, "orig_threading_excepthook not set"
         orig_threading_excepthook(args)
         sys.stderr.flush()
     finally:
         sys.stderr = old_stderr
 
 
-def setup_threading_excepthook() -> None:
+def setup_threading_excepthook():
     global orig_threading_excepthook
     import threading
     orig_threading_excepthook = threading.excepthook
@@ -466,13 +464,19 @@ def get_temp_dir(tmp_dir: StrPath | None = None) -> StrPath:
                         f"unexpectedly returned {tmp_dir!r} on WASI"
                     )
                 tmp_dir = os.path.join(tmp_dir, 'build')
+
+                # When get_temp_dir() is called in a worker process,
+                # get_temp_dir() path is different than in the parent process
+                # which is not a WASI process. So the parent does not create
+                # the same "tmp_dir" than the test worker process.
+                os.makedirs(tmp_dir, exist_ok=True)
         else:
             tmp_dir = tempfile.gettempdir()
 
     return os.path.abspath(tmp_dir)
 
 
-def fix_umask() -> None:
+def fix_umask():
     if support.is_emscripten:
         # Emscripten has default umask 0o777, which breaks some tests.
         # see https://github.com/emscripten-core/emscripten/issues/17269
@@ -568,13 +572,12 @@ _TEST_LIFECYCLE_HOOKS = frozenset((
     'setUpModule', 'tearDownModule',
 ))
 
-def normalize_test_name(test_full_name: str, *,
-                        is_error: bool = False) -> str | None:
+def normalize_test_name(test_full_name, *, is_error=False):
     short_name = test_full_name.split(" ")[0]
     if is_error and short_name in _TEST_LIFECYCLE_HOOKS:
         if test_full_name.startswith(('setUpModule (', 'tearDownModule (')):
             # if setUpModule() or tearDownModule() failed, don't filter
-            # tests with the test file name, don't use filters.
+            # tests with the test file name, don't use use filters.
             return None
 
         # This means that we have a failure in a life-cycle hook,
@@ -590,7 +593,7 @@ def normalize_test_name(test_full_name: str, *,
     return short_name
 
 
-def adjust_rlimit_nofile() -> None:
+def adjust_rlimit_nofile():
     """
     On macOS the default fd limit (RLIMIT_NOFILE) is sometimes too low (256)
     for our test suite to succeed. Raise it to something more reasonable. 1024
@@ -616,40 +619,31 @@ def adjust_rlimit_nofile() -> None:
                           f"{new_fd_limit}: {err}.")
 
 
-def get_host_runner() -> str:
+def get_host_runner():
     if (hostrunner := os.environ.get("_PYTHON_HOSTRUNNER")) is None:
         hostrunner = sysconfig.get_config_var("HOSTRUNNER")
     return hostrunner
 
 
-def is_cross_compiled() -> bool:
+def is_cross_compiled():
     return ('_PYTHON_HOST_PLATFORM' in os.environ)
 
 
-def format_resources(use_resources: dict[str, str | None]) -> str:
+def format_resources(use_resources: Iterable[str]):
+    use_resources = set(use_resources)
     all_resources = set(ALL_RESOURCES)
-
-    values = []
-    for name in sorted(use_resources):
-        if use_resources[name] is not None:
-            values.append(f'{name}={use_resources[name]}')
 
     # Express resources relative to "all"
     relative_all = ['all']
-    for name in sorted(all_resources - set(use_resources)):
+    for name in sorted(all_resources - use_resources):
         relative_all.append(f'-{name}')
-    for name in sorted(set(use_resources) - all_resources):
-        if use_resources[name] is None:
-            relative_all.append(name)
-    all_text = ','.join(relative_all + values)
+    for name in sorted(use_resources - all_resources):
+        relative_all.append(f'{name}')
+    all_text = ','.join(relative_all)
     all_text = f"resources: {all_text}"
 
     # List of enabled resources
-    resources = []
-    for name in sorted(use_resources):
-        if use_resources[name] is None:
-            resources.append(name)
-    text = ','.join(resources + values)
+    text = ','.join(sorted(use_resources))
     text = f"resources ({len(use_resources)}): {text}"
 
     # Pick the shortest string (prefer relative to all if lengths are equal)
@@ -659,8 +653,8 @@ def format_resources(use_resources: dict[str, str | None]) -> str:
         return text
 
 
-def display_header(use_resources: dict[str, str | None],
-                   python_cmd: tuple[str, ...] | None) -> None:
+def display_header(use_resources: tuple[str, ...],
+                   python_cmd: tuple[str, ...] | None):
     # Print basic platform information
     print("==", platform.python_implementation(), *sys.version.split())
     print("==", platform.platform(aliased=True),
@@ -738,7 +732,7 @@ def display_header(use_resources: dict[str, str | None],
     print(flush=True)
 
 
-def cleanup_temp_dir(tmp_dir: StrPath) -> None:
+def cleanup_temp_dir(tmp_dir: StrPath):
     import glob
 
     path = os.path.join(glob.escape(tmp_dir), TMP_PREFIX + '*')
@@ -790,7 +784,7 @@ ILLEGAL_XML_CHARS_RE = re.compile(
     # Special Unicode characters
     '\uFFFE'
     '\uFFFF'
-    # Match multiple sequential invalid characters for better efficiency
+    # Match multiple sequential invalid characters for better effiency
     ']+')
 
 def _sanitize_xml_replace(regs):
@@ -798,5 +792,5 @@ def _sanitize_xml_replace(regs):
     return ''.join(f'\\x{ord(ch):02x}' if ch <= '\xff' else ascii(ch)[1:-1]
                    for ch in text)
 
-def sanitize_xml(text: str) -> str:
+def sanitize_xml(text):
     return ILLEGAL_XML_CHARS_RE.sub(_sanitize_xml_replace, text)

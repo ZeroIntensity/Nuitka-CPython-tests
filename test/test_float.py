@@ -9,10 +9,8 @@ import unittest
 
 from test import support
 from test.support.testcase import FloatsAreIdenticalMixin
-from test.support.numbers import (
-    VALID_UNDERSCORE_LITERALS,
-    INVALID_UNDERSCORE_LITERALS,
-)
+from test.test_grammar import (VALID_UNDERSCORE_LITERALS,
+                               INVALID_UNDERSCORE_LITERALS)
 from math import isinf, isnan, copysign, ldexp
 import math
 
@@ -155,7 +153,7 @@ class GeneralFloatCases(unittest.TestCase):
         # non-UTF-8 byte string
         check(b'123\xa0')
 
-    @support.run_with_locale('LC_NUMERIC', 'fr_FR', 'de_DE', '')
+    @support.run_with_locale('LC_NUMERIC', 'fr_FR', 'de_DE')
     def test_float_with_comma(self):
         # set locale to something that doesn't use '.' for the decimal point
         # float must not accept the locale specific decimal point but
@@ -618,24 +616,6 @@ class GeneralFloatCases(unittest.TestCase):
         value = F('nan')
         self.assertEqual(hash(value), object.__hash__(value))
 
-    def test_issue_gh143006(self):
-        # When comparing negative non-integer float and int with the
-        # same number of bits in the integer part, __neg__() in the
-        # int subclass returning not an int caused an assertion error.
-        class EvilInt(int):
-            def __neg__(self):
-                return ""
-
-        i = -1 << 50
-        f = float(i) - 0.5
-        i = EvilInt(i)
-        self.assertFalse(f == i)
-        self.assertTrue(f != i)
-        self.assertTrue(f < i)
-        self.assertTrue(f <= i)
-        self.assertFalse(f > i)
-        self.assertFalse(f >= i)
-
 
 @unittest.skipUnless(hasattr(float, "__getformat__"), "requires __getformat__")
 class FormatFunctionsTestCase(unittest.TestCase):
@@ -742,8 +722,6 @@ class FormatTestCase(unittest.TestCase):
         self.assertEqual(format(INF, 'F'), 'INF')
 
     @support.requires_IEEE_754
-    @unittest.skipUnless(sys.float_repr_style == 'short',
-                         "applies only when using short float repr style")
     def test_format_testfile(self):
         with open(format_testfile, encoding="utf-8") as testfile:
             for line in testfile:

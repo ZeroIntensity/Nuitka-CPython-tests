@@ -6,7 +6,6 @@ if __name__ != 'test.support':
 import contextlib
 import dataclasses
 import functools
-import logging
 import _opcode
 import os
 import re
@@ -29,12 +28,11 @@ __all__ = [
     "record_original_stdout", "get_original_stdout", "captured_stdout",
     "captured_stdin", "captured_stderr", "captured_output",
     # unittest
-    "is_resource_enabled", "get_resource_value", "requires", "requires_resource",
-    "requires_freebsd_version",
+    "is_resource_enabled", "requires", "requires_freebsd_version",
     "requires_gil_enabled", "requires_linux_version", "requires_mac_ver",
     "check_syntax_error",
     "requires_gzip", "requires_bz2", "requires_lzma",
-    "bigmemtest", "nomemtest", "bigaddrspacetest", "cpython_only", "get_attribute",
+    "bigmemtest", "bigaddrspacetest", "cpython_only", "get_attribute",
     "requires_IEEE_754", "requires_zlib",
     "has_fork_support", "requires_fork",
     "has_subprocess_support", "requires_subprocess",
@@ -62,8 +60,6 @@ __all__ = [
     "skip_on_s390x",
     "without_optimizer",
     "force_not_colorized",
-    "force_not_colorized_test_class",
-    "make_clean_env",
     "BrokenIter",
     ]
 
@@ -180,7 +176,7 @@ def get_attribute(obj, name):
         return attribute
 
 verbose = 1              # Flag set to 0 by regrtest.py
-use_resources = None     # Flag set to {} by regrtest.py
+use_resources = None     # Flag set to [] by regrtest.py
 max_memuse = 0           # Disable bigmem tests (they will still be run with
                          # small sizes, to make sure they work.)
 real_max_memuse = 0
@@ -260,16 +256,22 @@ def _is_gui_available():
         # process not running under the same user id as the current console
         # user.  To avoid that, raise an exception if the window manager
         # connection is not available.
-        import subprocess
-        try:
-            rc = subprocess.run(["launchctl", "managername"],
-                                capture_output=True, check=True)
-            managername = rc.stdout.decode("utf-8").strip()
-        except subprocess.CalledProcessError:
-            reason = "unable to detect macOS launchd job manager"
+        from ctypes import cdll, c_int, pointer, Structure
+        from ctypes.util import find_library
+
+        app_services = cdll.LoadLibrary(find_library("ApplicationServices"))
+
+        if app_services.CGMainDisplayID() == 0:
+            reason = "gui tests cannot run without OS X window manager"
         else:
-            if managername != "Aqua":
-                reason = f"{managername=} -- can only run in a macOS GUI session"
+            class ProcessSerialNumber(Structure):
+                _fields_ = [("highLongOfPSN", c_int),
+                            ("lowLongOfPSN", c_int)]
+            psn = ProcessSerialNumber()
+            psn_p = pointer(psn)
+            if (  (app_services.GetCurrentProcess(psn_p) < 0) or
+                  (app_services.SetFrontProcess(psn_p) < 0) ):
+                reason = "cannot run without OS X gui process"
 
     # check on every platform whether tkinter can actually do anything
     if not reason:
@@ -302,16 +304,6 @@ def is_resource_enabled(resource):
 
     return use_resources is None or resource in use_resources
 
-def get_resource_value(resource):
-    """Test whether a resource is enabled.
-
-    Known resources are set by regrtest.py.  If not running under regrtest.py,
-    all resources are assumed enabled unless use_resources has been set.
-    """
-    if use_resources is None:
-        return None
-    return use_resources.get(resource)
-
 def requires(resource, msg=None):
     """Raise ResourceDenied if the specified resource is not available."""
     if not is_resource_enabled(resource):
@@ -322,16 +314,6 @@ def requires(resource, msg=None):
         raise ResourceDenied("No socket support")
     if resource == 'gui' and not _is_gui_available():
         raise ResourceDenied(_is_gui_available.reason)
-
-def _get_kernel_version(sysname="Linux"):
-    import platform
-    if platform.system() != sysname:
-        return None
-    version_txt = platform.release().split('-', 1)[0]
-    try:
-        return tuple(map(int, version_txt.split('.')))
-    except ValueError:
-        return None
 
 def _requires_unix_version(sysname, min_version):
     """Decorator raising SkipTest if the OS is `sysname` and the version is less
@@ -415,7 +397,7 @@ def skip_if_buildbot(reason=None):
     try:
         isbuildbot = getpass.getuser().lower() == 'buildbot'
     except (KeyError, OSError) as err:
-        logging.getLogger(__name__).warning('getpass.getuser() failed %s.', err, exc_info=err)
+        warnings.warn(f'getpass.getuser() failed {err}.', RuntimeWarning)
         isbuildbot = False
     return unittest.skipIf(isbuildbot, reason)
 
@@ -540,49 +522,26 @@ def has_no_debug_ranges():
     return not bool(config['code_debug_ranges'])
 
 def requires_debug_ranges(reason='requires co_positions / debug_ranges'):
-    try:
-        skip = has_no_debug_ranges()
-    except unittest.SkipTest as e:
-        skip = True
-        reason = e.args[0] if e.args else reason
-    return unittest.skipIf(skip, reason)
-
-
-def can_use_suppress_immortalization(suppress=True):
-    """Check if suppress_immortalization(suppress) can be used.
-
-    Use this helper in code where SkipTest must be eagerly handled.
-    """
-    if not suppress:
-        return True
-    try:
-        import _testinternalcapi
-    except ImportError:
-        return False
-    return True
-
+    return unittest.skipIf(has_no_debug_ranges(), reason)
 
 @contextlib.contextmanager
 def suppress_immortalization(suppress=True):
-    """Suppress immortalization of deferred objects.
-
-    If _testinternalcapi is not available, the decorated test or class
-    is skipped. Use can_use_suppress_immortalization() outside test cases
-    to check if this decorator can be used.
-    """
-    if not suppress:
-        yield  # no-op
+    """Suppress immortalization of deferred objects."""
+    try:
+        import _testinternalcapi
+    except ImportError:
+        yield
         return
 
-    from .import_helper import import_module
+    if not suppress:
+        yield
+        return
 
-    _testinternalcapi = import_module("_testinternalcapi")
     _testinternalcapi.suppress_immortalization(True)
     try:
         yield
     finally:
         _testinternalcapi.suppress_immortalization(False)
-
 
 def skip_if_suppress_immortalization():
     try:
@@ -885,6 +844,7 @@ def gc_threshold(*args):
     finally:
         gc.set_threshold(*old_threshold)
 
+
 def python_is_optimized():
     """Find if Python was built with optimizations."""
     cflags = sysconfig.get_config_var('PY_CFLAGS') or ''
@@ -892,11 +852,7 @@ def python_is_optimized():
     for opt in cflags.split():
         if opt.startswith('-O'):
             final_opt = opt
-    if sysconfig.get_config_var("CC") == "gcc":
-        non_opts = ('', '-O0', '-Og')
-    else:
-        non_opts = ('', '-O0')
-    return final_opt not in non_opts
+    return final_opt not in ('', '-O0', '-Og')
 
 
 def check_cflags_pgo():
@@ -971,34 +927,9 @@ def check_sizeof(test, o, size):
             % (type(o), result, size)
     test.assertEqual(result, size, msg)
 
-def subTests(arg_names, arg_values, /, *, _do_cleanups=False):
-    """Run multiple subtests with different parameters.
-    """
-    single_param = False
-    if isinstance(arg_names, str):
-        arg_names = arg_names.replace(',',' ').split()
-        if len(arg_names) == 1:
-            single_param = True
-    arg_values = tuple(arg_values)
-    def decorator(func):
-        if isinstance(func, type):
-            raise TypeError('subTests() can only decorate methods, not classes')
-        @functools.wraps(func)
-        def wrapper(self, /, *args, **kwargs):
-            for values in arg_values:
-                if single_param:
-                    values = (values,)
-                subtest_kwargs = dict(zip(arg_names, values))
-                with self.subTest(**subtest_kwargs):
-                    func(self, *args, **kwargs, **subtest_kwargs)
-                if _do_cleanups:
-                    self.doCleanups()
-        return wrapper
-    return decorator
-
 #=======================================================================
-# Decorator/context manager for running a code in a different locale,
-# correctly resetting it afterwards.
+# Decorator for running a function in a different locale, correctly resetting
+# it afterwards.
 
 @contextlib.contextmanager
 def run_with_locale(catstr, *locales):
@@ -1009,67 +940,22 @@ def run_with_locale(catstr, *locales):
     except AttributeError:
         # if the test author gives us an invalid category string
         raise
-    except Exception:
+    except:
         # cannot retrieve original locale, so do nothing
         locale = orig_locale = None
-        if '' not in locales:
-            raise unittest.SkipTest('no locales')
     else:
         for loc in locales:
             try:
                 locale.setlocale(category, loc)
                 break
-            except locale.Error:
+            except:
                 pass
-        else:
-            if '' not in locales:
-                raise unittest.SkipTest(f'no locales {locales}')
 
     try:
         yield
     finally:
         if locale and orig_locale:
             locale.setlocale(category, orig_locale)
-
-#=======================================================================
-# Decorator for running a function in multiple locales (if they are
-# availasble) and resetting the original locale afterwards.
-
-def run_with_locales(catstr, *locales):
-    def deco(func):
-        @functools.wraps(func)
-        def wrapper(self, /, *args, **kwargs):
-            dry_run = '' in locales
-            try:
-                import locale
-                category = getattr(locale, catstr)
-                orig_locale = locale.setlocale(category)
-            except AttributeError:
-                # if the test author gives us an invalid category string
-                raise
-            except Exception:
-                # cannot retrieve original locale, so do nothing
-                pass
-            else:
-                try:
-                    for loc in locales:
-                        with self.subTest(locale=loc):
-                            try:
-                                locale.setlocale(category, loc)
-                            except locale.Error:
-                                self.skipTest(f'no locale {loc!r}')
-                            else:
-                                dry_run = False
-                                func(self, *args, **kwargs)
-                finally:
-                    locale.setlocale(category, orig_locale)
-            if dry_run:
-                # no locales available, so just run the test
-                # with the current locale
-                with self.subTest(locale=None):
-                    func(self, *args, **kwargs)
-        return wrapper
-    return deco
 
 #=======================================================================
 # Decorator for running a function in a specific timezone, correctly
@@ -1135,7 +1021,7 @@ def set_memlimit(limit: str) -> None:
     global real_max_memuse
     memlimit = _parse_memlimit(limit)
     if memlimit < _2G - 1:
-        raise ValueError(f'Memory limit {limit!r} too low to be useful')
+        raise ValueError('Memory limit {limit!r} too low to be useful')
 
     real_max_memuse = memlimit
     memlimit = min(memlimit, MAX_Py_ssize_t)
@@ -1156,7 +1042,8 @@ class _MemoryWatchdog:
         try:
             f = open(self.procfile, 'r')
         except OSError as e:
-            logging.getLogger(__name__).warning('/proc not available for stats: %s', e, exc_info=e)
+            warnings.warn('/proc not available for stats: {}'.format(e),
+                          RuntimeWarning)
             sys.stderr.flush()
             return
 
@@ -1221,22 +1108,6 @@ def bigmemtest(size, memuse, dry_run=True):
         wrapper.memuse = memuse
         return wrapper
     return decorator
-
-def nomemtest(f):
-    """Check that we can use this test with `_testcapi.set_nomemory`."""
-    from .import_helper import import_module
-
-    @functools.wraps(f)
-    def internal(*args, **kwargs):
-        import_module('_testcapi')
-        return f(*args, **kwargs)
-
-    return unittest.skipIf(
-        # Python built with Py_TRACE_REFS fail with a fatal error in
-        # _PyRefchain_Trace() on memory allocation error.
-        Py_TRACE_REFS,
-        'cannot test Py_TRACE_REFS build',
-    )(cpython_only(internal))
 
 def bigaddrspacetest(f):
     """Decorator for tests that fill the address space."""
@@ -1379,8 +1250,8 @@ MISSING_C_DOCSTRINGS = (check_impl_detail() and
                         sys.platform != 'win32' and
                         not sysconfig.get_config_var('WITH_DOC_STRINGS'))
 
-HAVE_PY_DOCSTRINGS = _check_docstrings.__doc__ is not None
-HAVE_DOCSTRINGS = (HAVE_PY_DOCSTRINGS and not MISSING_C_DOCSTRINGS)
+HAVE_DOCSTRINGS = (_check_docstrings.__doc__ is not None and
+                   not MISSING_C_DOCSTRINGS)
 
 requires_docstrings = unittest.skipUnless(HAVE_DOCSTRINGS,
                                           "test requires docstrings")
@@ -1691,7 +1562,7 @@ def check__all__(test_case, module, name_of_module=None, extra=(),
     'module'.
 
     The 'name_of_module' argument can specify (as a string or tuple thereof)
-    what module(s) an API could be defined in order to be detected as a
+    what module(s) an API could be defined in in order to be detected as a
     public API. One case for this is when 'module' imports part of its public
     API from other modules, possibly a C backend (like 'csv' and its '_csv').
 
@@ -1992,9 +1863,8 @@ def missing_compiler_executable(cmd_names=[]):
     missing.
 
     """
-    from setuptools._distutils import ccompiler, sysconfig
+    from setuptools._distutils import ccompiler, sysconfig, spawn
     from setuptools import errors
-    import shutil
 
     compiler = ccompiler.new_compiler()
     sysconfig.customize_compiler(compiler)
@@ -2013,7 +1883,7 @@ def missing_compiler_executable(cmd_names=[]):
                     "the '%s' executable is not configured" % name
         elif not cmd:
             continue
-        if shutil.which(cmd[0]) is None:
+        if spawn.find_executable(cmd[0]) is None:
             return cmd[0]
 
 
@@ -2343,7 +2213,6 @@ def check_disallow_instantiation(testcase, tp, *args, **kwds):
         qualname = f"{name}"
     msg = f"cannot create '{re.escape(qualname)}' instances"
     testcase.assertRaisesRegex(TypeError, msg, tp, *args, **kwds)
-    testcase.assertRaisesRegex(TypeError, msg, tp.__new__, tp, *args, **kwds)
 
 def get_recursion_depth():
     """Get the recursion depth of the caller function.
@@ -2395,7 +2264,7 @@ def infinite_recursion(max_depth=None):
         # very deep recursion.
         max_depth = 20_000
     elif max_depth < 3:
-        raise ValueError(f"max_depth must be at least 3, got {max_depth}")
+        raise ValueError("max_depth must be at least 3, got {max_depth}")
     depth = get_recursion_depth()
     depth = max(depth - 1, 1)  # Ignore infinite_recursion() frame.
     limit = depth + max_depth
@@ -2461,7 +2330,7 @@ def _findwheel(pkgname):
     filenames = os.listdir(wheel_dir)
     filenames = sorted(filenames, reverse=True)  # approximate "newest" first
     for filename in filenames:
-        # filename is like 'setuptools-{version}-py3-none-any.whl'
+        # filename is like 'setuptools-67.6.1-py3-none-any.whl'
         if not filename.endswith(".whl"):
             continue
         prefix = pkgname + '-'
@@ -2470,16 +2339,16 @@ def _findwheel(pkgname):
     raise FileNotFoundError(f"No wheel for {pkgname} found in {wheel_dir}")
 
 
-# Context manager that creates a virtual environment, install setuptools in it,
-# and returns the paths to the venv directory and the python executable
+# Context manager that creates a virtual environment, install setuptools and wheel in it
+# and returns the path to the venv directory and the path to the python executable
 @contextlib.contextmanager
-def setup_venv_with_pip_setuptools(venv_dir):
+def setup_venv_with_pip_setuptools_wheel(venv_dir):
+    import shlex
     import subprocess
     from .os_helper import temp_cwd
 
     def run_command(cmd):
         if verbose:
-            import shlex
             print()
             print('Run:', ' '.join(map(shlex.quote, cmd)))
             subprocess.run(cmd, check=True)
@@ -2503,10 +2372,10 @@ def setup_venv_with_pip_setuptools(venv_dir):
         else:
             python = os.path.join(venv, 'bin', python_exe)
 
-        cmd = (python, '-X', 'dev',
+        cmd = [python, '-X', 'dev',
                '-m', 'pip', 'install',
                _findwheel('setuptools'),
-               )
+               _findwheel('wheel')]
         run_command(cmd)
 
         yield python
@@ -2694,9 +2563,9 @@ def exceeds_recursion_limit():
     return get_c_recursion_limit() * 3
 
 
-# Windows doesn't have os.uname() but it doesn't support s390x.
-is_s390x = hasattr(os, 'uname') and os.uname().machine == 's390x'
-skip_on_s390x = unittest.skipIf(is_s390x, 'skipped on s390x')
+#Windows doesn't have os.uname() but it doesn't support s390x.
+skip_on_s390x = unittest.skipIf(hasattr(os, 'uname') and os.uname().machine == 's390x',
+                                'skipped on s390x')
 
 Py_TRACE_REFS = hasattr(sys, 'getobjects')
 
@@ -2799,51 +2668,28 @@ def iter_slot_wrappers(cls):
             yield name, True
 
 
-@contextlib.contextmanager
-def no_color():
-    import _colorize
-    from .os_helper import EnvironmentVarGuard
-
-    with (
-        swap_attr(_colorize, "can_colorize", lambda *, file=None: False),
-        EnvironmentVarGuard() as env,
-    ):
-        env.unset("FORCE_COLOR", "NO_COLOR", "PYTHON_COLORS")
-        env.set("NO_COLOR", "1")
-        yield
-
-
 def force_not_colorized(func):
     """Force the terminal not to be colorized."""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        with no_color():
+        import _colorize
+        original_fn = _colorize.can_colorize
+        variables: dict[str, str | None] = {
+            "PYTHON_COLORS": None, "FORCE_COLOR": None, "NO_COLOR": None
+        }
+        try:
+            for key in variables:
+                variables[key] = os.environ.pop(key, None)
+            os.environ["NO_COLOR"] = "1"
+            _colorize.can_colorize = lambda: False
             return func(*args, **kwargs)
+        finally:
+            _colorize.can_colorize = original_fn
+            del os.environ["NO_COLOR"]
+            for key, value in variables.items():
+                if value is not None:
+                    os.environ[key] = value
     return wrapper
-
-
-def force_not_colorized_test_class(cls):
-    """Force the terminal not to be colorized for the entire test class."""
-    original_setUpClass = cls.setUpClass
-
-    @classmethod
-    @functools.wraps(cls.setUpClass)
-    def new_setUpClass(cls):
-        cls.enterClassContext(no_color())
-        original_setUpClass()
-
-    cls.setUpClass = new_setUpClass
-    return cls
-
-
-def make_clean_env() -> dict[str, str]:
-    clean_env = os.environ.copy()
-    for k in clean_env.copy():
-        if k.startswith("PYTHON"):
-            clean_env.pop(k)
-    clean_env.pop("FORCE_COLOR", None)
-    clean_env.pop("NO_COLOR", None)
-    return clean_env
 
 
 def initialized_with_pyrepl():
@@ -2867,44 +2713,3 @@ class BrokenIter:
         if self.iter_raises:
             1/0
         return self
-
-
-def linked_to_musl():
-    """
-    Test if the Python executable is linked to the musl C library.
-    """
-    if sys.platform != 'linux':
-        return False
-
-    import subprocess
-    exe = getattr(sys, '_base_executable', sys.executable)
-    cmd = ['ldd', exe]
-    try:
-        stdout = subprocess.check_output(cmd,
-                                         text=True,
-                                         stderr=subprocess.STDOUT)
-    except (OSError, subprocess.CalledProcessError):
-        return False
-    return ('musl' in stdout)
-
-
-def control_characters_c0() -> list[str]:
-    """Returns a list of C0 control characters as strings.
-    C0 control characters defined as the byte range 0x00-0x1F, and 0x7F.
-    """
-    return [chr(c) for c in range(0x00, 0x20)] + ["\x7F"]
-
-
-STATUS_DLL_INIT_FAILED = 0xC0000142
-def skip_on_low_desktop_heap_memory_subprocess(returncode):
-    if sys.platform not in ('win32', 'cygwin'):
-        return
-    # On Windows, STATUS_DLL_INIT_FAILED is a generic error code that could
-    # come from any of the DLLs being loaded when a new Python process is
-    # created. In practice, it's likely a memory allocation failure in the
-    # desktop heap memory which caused the DLL init failure, especially on
-    # process created with CREATE_NEW_CONSOLE creation flag. See the article:
-    # https://learn.microsoft.com/en-us/troubleshoot/windows-server/performance/desktop-heap-limitation-out-of-memory
-    if returncode == STATUS_DLL_INIT_FAILED:
-        raise unittest.SkipTest('gh-150436: DLL init failed, likely because '
-                                'of low desktop heap memory')

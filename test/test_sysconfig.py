@@ -5,8 +5,6 @@ import sys
 import os
 import subprocess
 import shutil
-import json
-import textwrap
 from copy import copy
 
 from test.support import (
@@ -19,7 +17,6 @@ from test.support import (
 from test.support.import_helper import import_module
 from test.support.os_helper import (TESTFN, unlink, skip_unless_symlink,
                                     change_cwd)
-from test.support.venv import VirtualEnvironment
 
 import sysconfig
 from sysconfig import (get_paths, get_platform, get_config_vars,
@@ -103,12 +100,6 @@ class TestSysConfig(unittest.TestCase):
             os.remove(path)
         elif os.path.isdir(path):
             shutil.rmtree(path)
-
-    def venv(self, **venv_create_args):
-        return VirtualEnvironment.from_tmpdir(
-            prefix=f'{self.id()}-venv-',
-            **venv_create_args,
-        )
 
     def test_get_path_names(self):
         self.assertEqual(get_path_names(), sysconfig._SCHEME_KEYS)
@@ -351,13 +342,6 @@ class TestSysConfig(unittest.TestCase):
 
             self.assertEqual(get_platform(), 'macosx-10.4-%s' % arch)
 
-        for macver in range(11, 16):
-            _osx_support._remove_original_values(get_config_vars())
-            get_config_vars()['CFLAGS'] = ('-fno-strict-overflow -Wsign-compare -Wunreachable-code'
-                                        '-arch arm64 -fno-common -dynamic -DNDEBUG -g -O3 -Wall')
-            get_config_vars()['MACOSX_DEPLOYMENT_TARGET'] = f"{macver}.0"
-            self.assertEqual(get_platform(), 'macosx-%d.0-arm64' % macver)
-
         # linux debian sarge
         os.name = 'posix'
         sys.version = ('2.3.5 (#1, Jul  4 2007, 17:28:59) '
@@ -373,12 +357,10 @@ class TestSysConfig(unittest.TestCase):
         sys.platform = 'android'
         get_config_vars()['ANDROID_API_LEVEL'] = 9
         for machine, abi in {
-            'aarch64': 'arm64_v8a',
-            'arm': 'armeabi_v7a',
-            'armv7l': 'armeabi_v7a',
-            'armv8l': 'armeabi_v7a',
-            'i686': 'x86',
             'x86_64': 'x86_64',
+            'i686': 'x86',
+            'aarch64': 'arm64_v8a',
+            'armv7l': 'armeabi_v7a',
         }.items():
             with self.subTest(machine):
                 self._set_uname(('Linux', 'localhost', '3.18.91+',
@@ -587,12 +569,10 @@ class TestSysConfig(unittest.TestCase):
         machine = platform.machine()
         suffix = sysconfig.get_config_var('EXT_SUFFIX')
         expected_triplet = {
-            "aarch64": "aarch64-linux-android",
-            "arm": "arm-linux-androideabi",
-            "armv7l": "arm-linux-androideabi",
-            "armv8l": "arm-linux-androideabi",
-            "i686": "i686-linux-android",
             "x86_64": "x86_64-linux-android",
+            "i686": "i686-linux-android",
+            "aarch64": "aarch64-linux-android",
+            "armv7l": "arm-linux-androideabi",
         }[machine]
         self.assertTrue(suffix.endswith(f"-{expected_triplet}.so"),
                         f"{machine=}, {suffix=}")
@@ -601,75 +581,6 @@ class TestSysConfig(unittest.TestCase):
     def test_osx_ext_suffix(self):
         suffix = sysconfig.get_config_var('EXT_SUFFIX')
         self.assertTrue(suffix.endswith('-darwin.so'), suffix)
-
-    @requires_subprocess()
-    # Nuitka: A compiled executable cannot serve as the Python interpreter in a venv.
-    def notest_config_vars_depend_on_site_initialization(self):
-        script = textwrap.dedent("""
-            import sysconfig
-
-            config_vars = sysconfig.get_config_vars()
-
-            import json
-            print(json.dumps(config_vars, indent=2))
-        """)
-
-        with self.venv() as venv:
-            site_config_vars = json.loads(venv.run('-c', script).stdout)
-            no_site_config_vars = json.loads(venv.run('-S', '-c', script).stdout)
-
-        self.assertNotEqual(site_config_vars, no_site_config_vars)
-        # With the site initialization, the virtual environment should be enabled.
-        self.assertEqual(site_config_vars['base'], venv.prefix)
-        self.assertEqual(site_config_vars['platbase'], venv.prefix)
-        #self.assertEqual(site_config_vars['prefix'], venv.prefix)  # # FIXME: prefix gets overwriten by _init_posix
-        # Without the site initialization, the virtual environment should be disabled.
-        self.assertEqual(no_site_config_vars['base'], site_config_vars['installed_base'])
-        self.assertEqual(no_site_config_vars['platbase'], site_config_vars['installed_platbase'])
-
-    @requires_subprocess()
-    # Nuitka: A compiled executable cannot serve as the Python interpreter in a venv.
-    def notest_config_vars_recalculation_after_site_initialization(self):
-        script = textwrap.dedent("""
-            import sysconfig
-
-            before = sysconfig.get_config_vars()
-
-            import site
-            site.main()
-
-            after = sysconfig.get_config_vars()
-
-            import json
-            print(json.dumps({'before': before, 'after': after}, indent=2))
-        """)
-
-        with self.venv() as venv:
-            config_vars = json.loads(venv.run('-S', '-c', script).stdout)
-
-        self.assertNotEqual(config_vars['before'], config_vars['after'])
-        self.assertEqual(config_vars['after']['base'], venv.prefix)
-        #self.assertEqual(config_vars['after']['prefix'], venv.prefix)  # FIXME: prefix gets overwriten by _init_posix
-        #self.assertEqual(config_vars['after']['exec_prefix'], venv.prefix)  # FIXME: exec_prefix gets overwriten by _init_posix
-
-    @requires_subprocess()
-    # Nuitka: A compiled executable cannot serve as the Python interpreter in a venv.
-    def notest_paths_depend_on_site_initialization(self):
-        script = textwrap.dedent("""
-            import sysconfig
-
-            paths = sysconfig.get_paths()
-
-            import json
-            print(json.dumps(paths, indent=2))
-        """)
-
-        with self.venv() as venv:
-            site_paths = json.loads(venv.run('-c', script).stdout)
-            no_site_paths = json.loads(venv.run('-S', '-c', script).stdout)
-
-        self.assertNotEqual(site_paths, no_site_paths)
-
 
 class MakefileTests(unittest.TestCase):
 
@@ -701,27 +612,6 @@ class MakefileTests(unittest.TestCase):
             'var5': 'dollar$5',
             'var6': '42/lib/python3.5/config-b42dollar$5-x86_64-linux-gnu',
         })
-
-
-class DeprecationTests(unittest.TestCase):
-    def deprecated(self, removal_version, deprecation_msg=None, error=Exception, error_msg=None):
-        if sys.version_info >= removal_version:
-            return self.assertRaises(error, msg=error_msg)
-        else:
-            return self.assertWarns(DeprecationWarning, msg=deprecation_msg)
-
-    def test_is_python_build_check_home(self):
-        with self.deprecated(
-            removal_version=(3, 15),
-            deprecation_msg=(
-                'The check_home argument of sysconfig.is_python_build is '
-                'deprecated and its value is ignored. '
-                'It will be removed in Python 3.15.'
-            ),
-            error=TypeError,
-            error_msg="is_python_build() takes 0 positional arguments but 1 were given",
-        ):
-            sysconfig.is_python_build('foo')
 
 
 if __name__ == "__main__":

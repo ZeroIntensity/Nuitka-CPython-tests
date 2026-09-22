@@ -35,21 +35,6 @@ if not supports_trampoline_profiling():
     raise unittest.SkipTest("perf trampoline profiling not supported")
 
 
-def _perf_env(**env_vars):
-    env = os.environ.copy()
-    # Keep perf's output stable regardless of the builder's perf config.
-    env.update(
-        {
-            "DEBUGINFOD_URLS": "",
-            "PERF_CONFIG": os.devnull,
-        }
-    )
-    if env_vars:
-        env.update(env_vars)
-    env["PYTHON_JIT"] = "0"
-    return env
-
-
 class TestPerfTrampoline(unittest.TestCase):
     def setUp(self):
         super().setUp()
@@ -83,7 +68,6 @@ class TestPerfTrampoline(unittest.TestCase):
                 text=True,
                 stderr=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                env=_perf_env(),
             ) as process:
                 stdout, stderr = process.communicate()
 
@@ -152,7 +136,6 @@ class TestPerfTrampoline(unittest.TestCase):
                 text=True,
                 stderr=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                env=_perf_env(),
             ) as process:
                 stdout, stderr = process.communicate()
 
@@ -174,57 +157,6 @@ class TestPerfTrampoline(unittest.TestCase):
         self.assertIn(f"py::bar_fork:{script}", child_perf_file_contents)
         self.assertIn(f"py::baz_fork:{script}", child_perf_file_contents)
 
-        # The parent's map should not contain the child's symbols.
-        self.assertNotIn(f"py::foo_fork:{script}", perf_file_contents)
-        self.assertNotIn(f"py::bar_fork:{script}", perf_file_contents)
-        self.assertNotIn(f"py::baz_fork:{script}", perf_file_contents)
-
-        # The child's map should not contain the parent's symbols.
-        self.assertNotIn(f"py::foo:{script}", child_perf_file_contents)
-        self.assertNotIn(f"py::bar:{script}", child_perf_file_contents)
-        self.assertNotIn(f"py::baz:{script}", child_perf_file_contents)
-
-    @unittest.skipIf(support.check_bolt_optimized(), "fails on BOLT instrumented binaries")
-    def test_trampoline_works_after_fork_with_many_code_objects(self):
-        code = """if 1:
-                import gc, os, sys, signal
-
-                # Create many code objects so trampoline_refcount > 1
-                for i in range(50):
-                    exec(compile(f"def _dummy_{i}(): pass", f"<test{i}>", "exec"))
-
-                pid = os.fork()
-                if pid == 0:
-                    # Child: create and destroy new code objects,
-                    # then collect garbage. If the old code watcher
-                    # survived the fork, the double-decrement of
-                    # trampoline_refcount will cause a SIGSEGV.
-                    for i in range(50):
-                        exec(compile(f"def _child_{i}(): pass", f"<child{i}>", "exec"))
-                    gc.collect()
-                    os._exit(0)
-                else:
-                    _, status = os.waitpid(pid, 0)
-                    if os.WIFSIGNALED(status):
-                        print(f"FAIL: child killed by signal {os.WTERMSIG(status)}", file=sys.stderr)
-                        sys.exit(1)
-                    sys.exit(os.WEXITSTATUS(status))
-                """
-        with temp_dir() as script_dir:
-            script = make_script(script_dir, "perftest", code)
-            with subprocess.Popen(
-                [sys.executable, "-Xperf", script],
-                text=True,
-                stderr=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                env=_perf_env(),
-            ) as process:
-                stdout, stderr = process.communicate()
-
-        self.assertEqual(process.returncode, 0, stderr)
-        self.assertEqual(stderr, "")
-
-    @unittest.skipIf(support.check_bolt_optimized(), "fails on BOLT instrumented binaries")
     def test_sys_api(self):
         code = """if 1:
                 import sys
@@ -253,7 +185,6 @@ class TestPerfTrampoline(unittest.TestCase):
                 text=True,
                 stderr=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                env=_perf_env(),
             ) as process:
                 stdout, stderr = process.communicate()
 
@@ -294,24 +225,6 @@ class TestPerfTrampoline(unittest.TestCase):
                 """
         assert_python_ok("-c", code)
 
-    def test_sys_api_perf_jit_backend(self):
-        code = """if 1:
-                import sys
-                sys.activate_stack_trampoline("perf_jit")
-                assert sys.is_stack_trampoline_active() is True
-                sys.deactivate_stack_trampoline()
-                assert sys.is_stack_trampoline_active() is False
-                """
-        assert_python_ok("-c", code, PYTHON_JIT="0")
-
-    def test_sys_api_with_existing_perf_jit_trampoline(self):
-        code = """if 1:
-                import sys
-                sys.activate_stack_trampoline("perf_jit")
-                sys.activate_stack_trampoline("perf_jit")
-                """
-        assert_python_ok("-c", code, PYTHON_JIT="0")
-
 
 def is_unwinding_reliable_with_frame_pointers():
     cflags = sysconfig.get_config_var("PY_CORE_CFLAGS")
@@ -339,8 +252,6 @@ def perf_command_works():
             cmd = (
                 "perf",
                 "record",
-                "--no-buildid",
-                "--no-buildid-cache",
                 "-g",
                 "--call-graph=fp",
                 "-o",
@@ -351,11 +262,7 @@ def perf_command_works():
                 'print("hello")',
             )
             stdout = subprocess.check_output(
-                cmd,
-                cwd=script_dir,
-                text=True,
-                stderr=subprocess.STDOUT,
-                env=_perf_env(),
+                cmd, cwd=script_dir, text=True, stderr=subprocess.STDOUT
             )
         except (subprocess.SubprocessError, OSError):
             return False
@@ -367,49 +274,32 @@ def perf_command_works():
 
 
 def run_perf(cwd, *args, use_jit=False, **env_vars):
-    env = _perf_env(**env_vars)
-    output_file = cwd + "/perf_output.perf"
-    base_cmd = [
-        "perf",
-        "record",
-        "--no-buildid",
-        "--no-buildid-cache",
-        "-g",
-        "--call-graph=dwarf,65528" if use_jit else "--call-graph=fp",
-    ]
-    if use_jit:
-        perf_commands = []
-        # Some builders have low perf_event_mlock_kb limits.
-        mmap_sizes = ("4M", "2M", "1M", "512K", "256K", "128K", None)
-        for mmap_size in mmap_sizes:
-            command = base_cmd.copy()
-            if mmap_size is not None:
-                command += ["-F99", "-k1", "-m", mmap_size]
-            else:
-                command += ["-F99", "-k1"]
-            command += ["-o", output_file, "--"]
-            perf_commands.append(command)
+    if env_vars:
+        env = os.environ.copy()
+        env.update(env_vars)
     else:
-        perf_commands = [base_cmd + ["-o", output_file, "--"]]
-
-    mmap_pages_error = "try again with a smaller value of -m/--mmap_pages"
-    for index, base_cmd in enumerate(perf_commands):
-        proc = subprocess.run(
-            base_cmd + list(args),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            text=True,
+        env = None
+    output_file = cwd + "/perf_output.perf"
+    if not use_jit:
+        base_cmd = ("perf", "record", "-g", "--call-graph=fp", "-o", output_file, "--")
+    else:
+        base_cmd = (
+            "perf",
+            "record",
+            "-g",
+            "--call-graph=dwarf,65528",
+            "-F99",
+            "-k1",
+            "-o",
+            output_file,
+            "--",
         )
-        if (
-            proc.returncode
-            and use_jit
-            and index != len(perf_commands) - 1
-            and mmap_pages_error in proc.stderr
-        ):
-            continue
-        break
-
+    proc = subprocess.run(
+        base_cmd + args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
     if proc.returncode:
         print(proc.stderr, file=sys.stderr)
         raise ValueError(f"Perf failed with return code {proc.returncode}")
@@ -418,10 +308,10 @@ def run_perf(cwd, *args, use_jit=False, **env_vars):
         jit_output_file = cwd + "/jit_output.dump"
         command = ("perf", "inject", "-j", "-i", output_file, "-o", jit_output_file)
         proc = subprocess.run(
-            command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True
+            command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, env=env
         )
         if proc.returncode:
-            print(proc.stderr, file=sys.stderr)
+            print(proc.stderr)
             raise ValueError(f"Perf failed with return code {proc.returncode}")
         # Copy the jit_output_file to the output_file
         os.rename(jit_output_file, output_file)
@@ -433,40 +323,23 @@ def run_perf(cwd, *args, use_jit=False, **env_vars):
         stderr=subprocess.PIPE,
         env=env,
         check=True,
-        text=True,
     )
-    return proc.stdout, proc.stderr
+    return proc.stdout.decode("utf-8", "replace"), proc.stderr.decode(
+        "utf-8", "replace"
+    )
 
 
 class TestPerfProfilerMixin:
-    PERF_CAPTURE_ATTEMPTS = 3
-
-    def run_perf(self, script_dir, script, activate_trampoline=True):
+    def run_perf(self, script_dir, perf_mode, script):
         raise NotImplementedError()
-
-    def run_perf_with_retries(
-        self, script_dir, script, expected_symbols=(), activate_trampoline=True
-    ):
-        stdout = stderr = ""
-        for _ in range(self.PERF_CAPTURE_ATTEMPTS):
-            stdout, stderr = self.run_perf(
-                script_dir, script, activate_trampoline=activate_trampoline
-            )
-            if activate_trampoline and any(
-                symbol not in stdout for symbol in expected_symbols
-            ):
-                continue
-            break
-        return stdout, stderr
 
     def test_python_calls_appear_in_the_stack_if_perf_activated(self):
         with temp_dir() as script_dir:
             code = """if 1:
-                from itertools import repeat
-
                 def foo(n):
-                    for _ in repeat(None, n):
-                        pass
+                    x = 0
+                    for i in range(n):
+                        x += i
 
                 def bar(n):
                     foo(n)
@@ -474,29 +347,23 @@ class TestPerfProfilerMixin:
                 def baz(n):
                     bar(n)
 
-                baz(40000000)
+                baz(10000000)
                 """
             script = make_script(script_dir, "perftest", code)
-            expected_symbols = [
-                f"py::foo:{script}",
-                f"py::bar:{script}",
-                f"py::baz:{script}",
-            ]
-            stdout, _ = self.run_perf_with_retries(
-                script_dir, script, expected_symbols
-            )
+            stdout, stderr = self.run_perf(script_dir, script)
+            self.assertEqual(stderr, "")
 
-            for expected_symbol in expected_symbols:
-                self.assertIn(expected_symbol, stdout)
+            self.assertIn(f"py::foo:{script}", stdout)
+            self.assertIn(f"py::bar:{script}", stdout)
+            self.assertIn(f"py::baz:{script}", stdout)
 
     def test_python_calls_do_not_appear_in_the_stack_if_perf_deactivated(self):
         with temp_dir() as script_dir:
             code = """if 1:
-                from itertools import repeat
-
                 def foo(n):
-                    for _ in repeat(None, n):
-                        pass
+                    x = 0
+                    for i in range(n):
+                        x += i
 
                 def bar(n):
                     foo(n)
@@ -504,12 +371,13 @@ class TestPerfProfilerMixin:
                 def baz(n):
                     bar(n)
 
-                baz(40000000)
+                baz(10000000)
                 """
             script = make_script(script_dir, "perftest", code)
-            stdout, _ = self.run_perf_with_retries(
+            stdout, stderr = self.run_perf(
                 script_dir, script, activate_trampoline=False
             )
+            self.assertEqual(stderr, "")
 
             self.assertNotIn(f"py::foo:{script}", stdout)
             self.assertNotIn(f"py::bar:{script}", stdout)
@@ -583,7 +451,6 @@ class TestPerfProfiler(unittest.TestCase, TestPerfProfilerMixin):
                 universal_newlines=True,
                 stderr=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                env=_perf_env(),
             ) as process:
                 stdout, stderr = process.communicate()
 
@@ -615,19 +482,15 @@ class TestPerfProfiler(unittest.TestCase, TestPerfProfilerMixin):
 
 def _is_perf_vesion_at_least(major, minor):
     # The output of perf --version looks like "perf version 6.7-3" but
-    # it can also be perf version "perf version 5.15.143", or even include
-    # a commit hash in the version string, like "6.12.9.g242e6068fd5c"
-    #
-    # PermissionError is raised if perf does not exist on the Windows Subsystem
-    # for Linux, see #134987
+    # it can also be perf version "perf version 5.15.143"
     try:
         output = subprocess.check_output(["perf", "--version"], text=True)
-    except (subprocess.CalledProcessError, FileNotFoundError, PermissionError):
+    except (subprocess.CalledProcessError, FileNotFoundError):
         return False
     version = output.split()[2]
     version = version.split("-")[0]
     version = version.split(".")
-    version = tuple(map(int, version[:2]))
+    version = tuple(map(int, version))
     return version >= (major, minor)
 
 

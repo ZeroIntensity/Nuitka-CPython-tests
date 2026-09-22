@@ -118,7 +118,7 @@ def regrtest_runner(result: TestResult, test_func, runtests: RunTests) -> None:
 
 
 # Storage of uncollectable GC objects (gc.garbage)
-GC_GARBAGE: list[object] = []
+GC_GARBAGE = []
 
 
 def _load_run_test(result: TestResult, runtests: RunTests) -> None:
@@ -245,7 +245,7 @@ def _runtest(result: TestResult, runtests: RunTests) -> None:
     try:
         setup_tests(runtests)
 
-        if output_on_failure or runtests.pgo:
+        if output_on_failure:
             support.verbose = True
 
             stream = io.StringIO()

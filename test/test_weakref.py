@@ -1022,7 +1022,7 @@ class ReferencesTestCase(TestBase):
         del x
         support.gc_collect()
 
-    @support.nomemtest
+    @support.cpython_only
     def test_no_memory_when_clearing(self):
         # gh-118331: Make sure we do not raise an exception from the destructor
         # when clearing weakrefs if allocating the intermediate tuple fails.

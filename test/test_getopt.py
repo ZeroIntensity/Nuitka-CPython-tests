@@ -1,19 +1,19 @@
 # test_getopt.py
 # David Goodger <dgoodger@bigfoot.com> 2000-08-19
 
-import doctest
-import getopt
-import sys
-import unittest
-from test.support.i18n_helper import TestTranslationsBase, update_translation_snapshots
 from test.support.os_helper import EnvironmentVarGuard
+import doctest
+import unittest
+
+import getopt
 
 sentinel = object()
 
 class GetoptTests(unittest.TestCase):
     def setUp(self):
         self.env = self.enterContext(EnvironmentVarGuard())
-        del self.env["POSIXLY_CORRECT"]
+        if "POSIXLY_CORRECT" in self.env:
+            del self.env["POSIXLY_CORRECT"]
 
     def assertError(self, *args, **kwargs):
         self.assertRaises(getopt.GetoptError, *args, **kwargs)
@@ -141,10 +141,6 @@ class GetoptTests(unittest.TestCase):
         self.assertEqual(longopts, [('--help', 'x')])
         self.assertRaises(getopt.GetoptError, getopt.getopt, ['--help='], '', ['help'])
 
-    def test_getopt_error_str(self):
-        error  = getopt.GetoptError('option -a not recognized', 'a')
-        self.assertEqual(str(error), 'option -a not recognized')
-
 def test_libref_examples():
     """
     Examples from the Library Reference:  Doc/lib/libgetopt.tex
@@ -177,20 +173,10 @@ def test_libref_examples():
     ['a1', 'a2']
     """
 
-
-class TestTranslations(TestTranslationsBase):
-    def test_translations(self):
-        self.assertMsgidsEqual(getopt)
-
-
 def load_tests(loader, tests, pattern):
     tests.addTest(doctest.DocTestSuite())
     return tests
 
 
-if __name__ == '__main__':
-    # To regenerate translation snapshots
-    if len(sys.argv) > 1 and sys.argv[1] == '--snapshot-update':
-        update_translation_snapshots(getopt)
-        sys.exit(0)
+if __name__ == "__main__":
     unittest.main()

@@ -42,41 +42,31 @@ class TestAndroidOutput(unittest.TestCase):
             for line in self.logcat_process.stdout:
                 self.logcat_queue.put(line.rstrip("\n"))
             self.logcat_process.stdout.close()
-
         self.logcat_thread = Thread(target=logcat_thread)
         self.logcat_thread.start()
 
-        try:
-            from ctypes import CDLL, c_char_p, c_int
-            android_log_write = getattr(CDLL("liblog.so"), "__android_log_write")
-            android_log_write.argtypes = (c_int, c_char_p, c_char_p)
-            ANDROID_LOG_INFO = 4
+        from ctypes import CDLL, c_char_p, c_int
+        android_log_write = getattr(CDLL("liblog.so"), "__android_log_write")
+        android_log_write.argtypes = (c_int, c_char_p, c_char_p)
+        ANDROID_LOG_INFO = 4
 
-            # Separate tests using a marker line with a different tag.
-            tag, message = "python.test", f"{self.id()} {time()}"
-            android_log_write(
-                ANDROID_LOG_INFO, tag.encode("UTF-8"), message.encode("UTF-8"))
-            self.assert_log("I", tag, message, skip=True)
-        except:
-            # If setUp throws an exception, tearDown is not automatically
-            # called. Avoid leaving a dangling thread which would keep the
-            # Python process alive indefinitely.
-            self.tearDown()
-            raise
+        # Separate tests using a marker line with a different tag.
+        tag, message = "python.test", f"{self.id()} {time()}"
+        android_log_write(
+            ANDROID_LOG_INFO, tag.encode("UTF-8"), message.encode("UTF-8"))
+        self.assert_log("I", tag, message, skip=True, timeout=5)
 
     def assert_logs(self, level, tag, expected, **kwargs):
         for line in expected:
             self.assert_log(level, tag, line, **kwargs)
 
-    def assert_log(self, level, tag, expected, *, skip=False):
-        deadline = time() + LOOPBACK_TIMEOUT
+    def assert_log(self, level, tag, expected, *, skip=False, timeout=0.5):
+        deadline = time() + timeout
         while True:
             try:
                 line = self.logcat_queue.get(timeout=(deadline - time()))
             except queue.Empty:
-                raise self.failureException(
-                    f"line not found: {expected!r}"
-                ) from None
+                self.fail(f"line not found: {expected!r}")
             if match := re.fullmatch(fr"(.)/{tag}: (.*)", line):
                 try:
                     self.assertEqual(level, match[1])
@@ -91,42 +81,35 @@ class TestAndroidOutput(unittest.TestCase):
         self.logcat_process.wait(LOOPBACK_TIMEOUT)
         self.logcat_thread.join(LOOPBACK_TIMEOUT)
 
-        # Avoid an irrelevant warning about threading._dangling.
-        self.logcat_thread = None
-
     @contextmanager
-    def reconfigure(self, stream, **settings):
-        original_settings = {key: getattr(stream, key, None) for key in settings.keys()}
-        stream.reconfigure(**settings)
+    def unbuffered(self, stream):
+        stream.reconfigure(write_through=True)
         try:
             yield
         finally:
-            stream.reconfigure(**original_settings)
+            stream.reconfigure(write_through=False)
 
+    # In --verbose3 mode, sys.stdout and sys.stderr are captured, so we can't
+    # test them directly. Detect this mode and use some temporary streams with
+    # the same properties.
     def stream_context(self, stream_name, level):
+        # https://developer.android.com/ndk/reference/group/logging
+        prio = {"I": 4, "W": 5}[level]
+
         stack = ExitStack()
         stack.enter_context(self.subTest(stream_name))
-
-        # In --verbose3 mode, sys.stdout and sys.stderr are captured, so we can't
-        # test them directly. Detect this mode and use some temporary streams with
-        # the same properties.
         stream = getattr(sys, stream_name)
         native_stream = getattr(sys, f"__{stream_name}__")
         if isinstance(stream, io.StringIO):
-            # https://developer.android.com/ndk/reference/group/logging
-            prio = {"I": 4, "W": 5}[level]
             stack.enter_context(
                 patch(
                     f"sys.{stream_name}",
-                    stream := TextLogStream(
-                        prio, f"python.{stream_name}", native_stream,
+                    TextLogStream(
+                        prio, f"python.{stream_name}", native_stream.fileno(),
+                        errors="backslashreplace"
                     ),
                 )
             )
-
-        # The tests assume the stream is initially buffered.
-        stack.enter_context(self.reconfigure(stream, write_through=False))
-
         return stack
 
     def test_str(self):
@@ -140,9 +123,12 @@ class TestAndroidOutput(unittest.TestCase):
                 self.assertIs(stream.readable(), False)
                 self.assertEqual(stream.fileno(), fileno)
                 self.assertEqual("UTF-8", stream.encoding)
-                self.assertEqual("backslashreplace", stream.errors)
                 self.assertIs(stream.line_buffering, True)
                 self.assertIs(stream.write_through, False)
+
+                # stderr is backslashreplace by default; stdout is configured
+                # that way by libregrtest.main.
+                self.assertEqual("backslashreplace", stream.errors)
 
                 def write(s, lines=None, *, write_len=None):
                     if write_len is None:
@@ -153,7 +139,7 @@ class TestAndroidOutput(unittest.TestCase):
                     self.assert_logs(level, tag, lines)
 
                 # Single-line messages,
-                with self.reconfigure(stream, write_through=True):
+                with self.unbuffered(stream):
                     write("", [])
 
                     write("a")
@@ -183,18 +169,14 @@ class TestAndroidOutput(unittest.TestCase):
 
                 # Multi-line messages. Avoid identical consecutive lines, as
                 # they may activate "chatty" filtering and break the tests.
-                #
-                # Additional spaces will appear in the output where necessary to
-                # protect leading newlines.
-                write("\nx", [" "])
+                write("\nx", [""])
                 write("\na\n", ["x", "a"])
-                write("\n", [" "])
-                write("\n\n", [" ", " "])
+                write("\n", [""])
                 write("b\n", ["b"])
-                write("c\n\n", ["c", " "])
+                write("c\n\n", ["c", ""])
                 write("d\ne", ["d"])
                 write("xx", [])
-                write("f\n\ng", ["exxf", " "])
+                write("f\n\ng", ["exxf", ""])
                 write("\n", ["g"])
 
                 # Since this is a line-based logging system, line buffering
@@ -204,17 +186,16 @@ class TestAndroidOutput(unittest.TestCase):
 
                 # However, buffering can be turned off completely if you want a
                 # flush after every write.
-                with self.reconfigure(stream, write_through=True):
-                    write("\nx", [" ", "x"])
-                    write("\na\n", [" ", "a"])
-                    write("\n", [" "])
-                    write("\n\n", [" ", " "])
+                with self.unbuffered(stream):
+                    write("\nx", ["", "x"])
+                    write("\na\n", ["", "a"])
+                    write("\n", [""])
                     write("b\n", ["b"])
-                    write("c\n\n", ["c", " "])
+                    write("c\n\n", ["c", ""])
                     write("d\ne", ["d", "e"])
                     write("xx", ["xx"])
-                    write("f\n\ng", ["f", " ", "g"])
-                    write("\n", [" "])
+                    write("f\n\ng", ["f", "", "g"])
+                    write("\n", [""])
 
                 # "\r\n" should be translated into "\n".
                 write("hello\r\n", ["hello"])
@@ -334,16 +315,19 @@ class TestAndroidOutput(unittest.TestCase):
                 # currently use `logcat -v tag`, which shows each line as if it
                 # was a separate log entry, but strips a single trailing
                 # newline.
-                write(b"\nx", [" ", "x"])
-                write(b"\na\n", [" ", "a"])
-                write(b"\n", [" "])
-                write(b"\n\n", [" ", ""])
+                #
+                # On newer versions of Android, all three of the above tools (or
+                # maybe Logcat itself) will also strip any number of leading
+                # newlines.
+                write(b"\nx", ["", "x"] if api_level < 30 else ["x"])
+                write(b"\na\n", ["", "a"] if api_level < 30 else ["a"])
+                write(b"\n", [""])
                 write(b"b\n", ["b"])
                 write(b"c\n\n", ["c", ""])
                 write(b"d\ne", ["d", "e"])
                 write(b"xx", ["xx"])
                 write(b"f\n\ng", ["f", "", "g"])
-                write(b"\n", [" "])
+                write(b"\n", [""])
 
                 # "\r\n" should be translated into "\n".
                 write(b"hello\r\n", ["hello"])
